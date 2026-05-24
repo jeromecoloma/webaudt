@@ -738,7 +738,11 @@ func (m *model) rebuildPreview() {
 	row := m.sites[m.cursor]
 	var b strings.Builder
 	b.WriteString(ui.Legend() + "\n")
-	b.WriteString(ui.Dim(strings.Repeat("─", 40)) + "\n")
+	sepW := m.preview.Width
+	if sepW <= 0 {
+		sepW = 40
+	}
+	b.WriteString(ui.Dim(strings.Repeat("─", sepW)) + "\n")
 	b.WriteString(ui.Name(row.site.Name))
 	b.WriteString("\n")
 	b.WriteString(ui.Dim("path:  ") + row.site.Path + "\n")
@@ -784,7 +788,7 @@ func (m *model) rebuildPreview() {
 		groups := groupAdvisoriesByPackage(p.eco.Advisories)
 		const perPkgLimit = 6
 		for _, g := range groups {
-			b.WriteString("\n" + ui.Bold(g.pkg) + "\n")
+			b.WriteString("\n " + ui.Bold(g.pkg) + "\n")
 			b.WriteString(m.renderPackageTable(g, perPkgLimit) + "\n")
 			if len(g.items) > perPkgLimit {
 				b.WriteString(ui.Dim(fmt.Sprintf("  … and %d more in this package", len(g.items)-perPkgLimit)) + "\n")
