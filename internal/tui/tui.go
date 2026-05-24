@@ -714,7 +714,7 @@ func (m *model) rebuildPreview() {
 		}
 		b.WriteString("\n" + ui.Bold(p.label) + "  " + ui.CountsSummaryLong(p.eco.Counts) + "\n")
 		if p.eco.AuditPath != "" && p.eco.AuditPath != row.site.Path {
-			b.WriteString("  " + ui.Dim("auditing: ") + p.eco.AuditPath + "\n")
+			b.WriteString(ui.Dim("auditing: ") + p.eco.AuditPath + "\n")
 		}
 		if p.eco.Status == types.StatusErrored {
 			b.WriteString("  " + ui.Failure("ERROR: ") + p.eco.Error + "\n")
