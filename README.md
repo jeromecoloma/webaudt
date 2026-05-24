@@ -2,55 +2,40 @@
 
 Terminal UI for monitoring `composer audit` and `npm audit` findings across a registry of local sites.
 
+Written in Go. Pure single-binary install — no external runtime deps beyond `composer`/`npm` themselves (and only when you register a site of that type).
+
 ## Install
 
 ```sh
 git clone <this repo> ~/src/webaudt
 cd ~/src/webaudt
-./install.sh     # symlinks bin/webaudt into ~/.local/bin
-webaudt doctor   # verify dependencies
+./install.sh
 ```
 
-### Dependencies
+`install.sh` builds the binary, symlinks it into `~/.local/bin/webaudt`, and installs shell completions for bash and zsh.
 
-Required: `bash >= 4`, `fzf >= 0.40`, `gum >= 0.13`, `jq >= 1.6`, `yq >= 4` (Mike Farah's Go build, **not** the Python one), `git >= 2.20`.
-
-Optional, only invoked for sites of that type: `composer`, `npm`.
-
-macOS:
+Build manually:
 
 ```sh
-brew install bash fzf gum jq yq git
+go build -o bin/webaudt ./cmd/webaudt
 ```
 
-Debian/Ubuntu:
-
-```sh
-sudo apt install bash fzf jq git
-# gum: github.com/charmbracelet/gum
-# yq:  github.com/mikefarah/yq (v4)
-```
-
-Arch:
-
-```sh
-sudo pacman -S bash fzf gum jq go-yq git
-```
+Requires Go 1.21+ to build. The compiled binary has no Go runtime dependency.
 
 ## Quickstart
 
 ```sh
 webaudt add ~/Sites/mysite.com       # auto-detects composer/npm/both
 webaudt list                          # show registered sites
-webaudt                               # open TUI
-webaudt refresh --all                 # re-run all audits
-webaudt status --json | jq .          # scriptable output
-webaudt rm mysite.com                 # remove a site
+webaudt                               # open the TUI
+webaudt refresh --all                 # re-run every audit
+webaudt status --json                 # scriptable output
+webaudt rm mysite                     # remove a site
 ```
 
 ## Configuration
 
-`~/.config/webaudt/config.toml` is created with defaults on first run. See `webaudt-prd.md` §5 for the full schema.
+`~/.config/webaudt/config.toml` is created with defaults on first run.
 
 ```toml
 [settings]
@@ -66,66 +51,48 @@ path = "/home/user/Sites/mysite.com"
 type = "both"
 composer_path = "/home/user/Sites/mysite.com"
 npm_path = "/home/user/Sites/mysite.com/www"
-# composer_bin / npm_bin are auto-detected at `add` time and only persisted
-# when they differ from the global default. Edit freely to point at a
-# project-local binary (e.g. `bin/composer`, `composer.phar`, or a specific
-# `~/.nvm/versions/node/<v>/bin/npm`).
+# composer_bin and npm_bin are auto-detected at `add` time and only persisted
+# when they differ from the global default. Edit freely.
 composer_bin = "/home/user/Sites/mysite.com/bin/composer"
 ```
 
-## Shell completion
-
-**zsh:**
-
-```sh
-mkdir -p ~/.zsh/completions
-ln -sf "$PWD/completions/_webaudt" ~/.zsh/completions/_webaudt
-# Add to ~/.zshrc (before `compinit`):
-#   fpath=(~/.zsh/completions $fpath)
-#   autoload -Uz compinit && compinit
-```
-
-**bash:**
-
-```sh
-echo "source $PWD/completions/webaudt.bash" >> ~/.bashrc
-```
-
-Completion covers subcommands, flags, ecosystem types, and dynamic site names from your config.
-
 ## TUI keys
 
-| Key   | Action                                  |
-|-------|-----------------------------------------|
-| `r`   | Refresh the highlighted site            |
-| `R`   | Refresh every site (ignores TTL)        |
-| Enter | Full JSON details (pager / `bat`)       |
-| Esc   | Quit                                    |
+| Key       | Action                                  |
+|-----------|-----------------------------------------|
+| `1` / `2` | Focus sidebar / preview pane            |
+| `Tab`     | Cycle pane focus                        |
+| `j` / `k` | Move down / up in the sidebar           |
+| `↑` / `↓` | Scroll the preview pane (when focused)  |
+| `r`       | Refresh the highlighted site            |
+| `R`       | Refresh every site                      |
+| `?`       | Show key hints                          |
+| `q` / Esc | Quit                                    |
 
-## Exit codes (`webaudt status`)
+## Exit codes (`webaudt status` / `refresh`)
 
-| Code | Meaning                  |
-|------|--------------------------|
-| 0    | Clean                    |
-| 1    | Moderate / low advisories|
-| 2    | High advisories          |
-| 3    | Critical advisories      |
-| 10   | Audit failed             |
+| Code | Meaning                          |
+|------|----------------------------------|
+| 0    | Clean                            |
+| 1    | Moderate / low / info / unrated  |
+| 2    | High                             |
+| 3    | Critical                         |
+| 10   | Audit failed                     |
+
+## Severity buckets
+
+webaudt normalizes both composer and npm output into six severity buckets, ordered worst → least severe:
+
+1. **critical** — confirmed CVSS critical
+2. **high** — confirmed CVSS high
+3. **unknown** (pink/magenta `◆`) — advisory present but composer/npm gave **no severity rating** (typical for FriendsOfPHP advisories without a CVSS score). Treat as "review required".
+4. **moderate**
+5. **low**
+6. **info**
 
 ## Portability
 
-Tested on macOS (Apple Silicon, bash 5.x via Homebrew) and designed to work on Linux (bash 4+). Key portability notes:
-
-- Uses `sha1sum` on Linux, `shasum` on macOS — whichever is available.
-- Uses BSD `date -r <epoch>` on macOS, GNU `date -d @<epoch>` on Linux.
-- Advisory locks use `mkdir` (atomic on every POSIX filesystem), no `flock` dep.
-- Per-ecosystem binaries (`composer`, `npm`) are only required for sites of that type — not at install time.
-
-macOS users **must** install bash 4+ (`brew install bash`) since the system bash is 3.2 and lacks features like `wait -n` and `declare -A`. The installer warns if the bash on your `$PATH` is too old.
-
-## Scope
-
-v0.1 is read-only: register, audit, view. Update / commit / push workflows are deferred. See `webaudt-prd.md` §12.
+Single Go binary. Tested on macOS (Apple Silicon). Linux is supported but not yet smoke-tested.
 
 ## License
 

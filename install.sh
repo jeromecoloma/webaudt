@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# install.sh — symlink bin/webaudt into ~/.local/bin and set up shell completion (idempotent).
+# install.sh — build (if needed) and symlink webaudt into ~/.local/bin.
+# Also installs shell completion via cobra's built-in generator.
 
 set -eu
 
@@ -8,27 +9,23 @@ src="$src_dir/bin/webaudt"
 target_dir="${PREFIX:-$HOME/.local/bin}"
 target="$target_dir/webaudt"
 
-# ---- Bash 4+ check ----
-runtime_bash=$(command -v bash || true)
-if [ -n "$runtime_bash" ]; then
-    runtime_major=$("$runtime_bash" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || echo 0)
-    if [ "${runtime_major:-0}" -lt 4 ]; then
-        printf 'webaudt: WARNING — `bash` on your PATH is %s (need 4+).\n' "$("$runtime_bash" --version | head -n1)" >&2
-        case "$(uname -s)" in
-            Darwin) printf '  macOS: brew install bash\n\n' >&2 ;;
-            Linux)  printf '  Install bash via your distro package manager.\n\n' >&2 ;;
-        esac
+# Build the binary if missing.
+if [ ! -x "$src" ]; then
+    if ! command -v go >/dev/null 2>&1; then
+        printf 'webaudt: go is required to build (get it from https://go.dev/).\n' >&2
+        exit 1
     fi
+    printf '  Building webaudt...\n'
+    (cd "$src_dir" && go build -o bin/webaudt ./cmd/webaudt)
 fi
 
-# ---- Install the binary symlink ----
 mkdir -p "$target_dir"
 if [ -L "$target" ]; then
     existing=$(readlink "$target")
     if [ "$existing" = "$src" ]; then
         printf '  webaudt: already linked at %s\n' "$target"
     else
-        printf '  webaudt: replacing existing symlink (%s -> %s)\n' "$target" "$existing"
+        printf '  webaudt: replacing symlink (%s -> %s)\n' "$target" "$existing"
         rm "$target"
         ln -s "$src" "$target"
     fi
@@ -42,25 +39,19 @@ fi
 
 case ":$PATH:" in
     *":$target_dir:"*) ;;
-    *) printf '\n  Note: %s is not in $PATH. Add it to your shell rc:\n    export PATH="%s:$PATH"\n' "$target_dir" "$target_dir" ;;
+    *) printf '\n  Note: %s is not in $PATH. Add to your shell rc:\n    export PATH="%s:$PATH"\n' "$target_dir" "$target_dir" ;;
 esac
 
-# ---- Shell completion ----
+# ---- Shell completion via cobra's generator ----
 
 install_zsh_completion() {
     local zsh_comp_dir="$HOME/.zsh/completions"
-    local zsh_link="$zsh_comp_dir/_webaudt"
-    local zsh_src="$src_dir/completions/_webaudt"
-
+    local zsh_file="$zsh_comp_dir/_webaudt"
     mkdir -p "$zsh_comp_dir"
-    if [ -L "$zsh_link" ] && [ "$(readlink "$zsh_link")" = "$zsh_src" ]; then
-        printf '  zsh:  already linked at %s\n' "$zsh_link"
-    else
-        ln -sf "$zsh_src" "$zsh_link"
-        printf '  zsh:  installed -> %s\n' "$zsh_link"
+    if "$src" completion zsh >"$zsh_file" 2>/dev/null; then
+        printf '  zsh:  installed -> %s\n' "$zsh_file"
     fi
 
-    # Check that ~/.zshrc has the fpath + compinit lines.
     local zshrc="$HOME/.zshrc"
     if [ -f "$zshrc" ] && grep -q '\.zsh/completions' "$zshrc"; then
         :
@@ -73,13 +64,11 @@ install_zsh_completion() {
 }
 
 install_bash_completion() {
-    local bash_src="$src_dir/completions/webaudt.bash"
-    local bashrc="$HOME/.bashrc"
-    local line="source \"$bash_src\""
-    if [ -f "$bashrc" ] && grep -Fq "$bash_src" "$bashrc"; then
-        printf '  bash: already sourced from %s\n' "$bashrc"
-    else
-        printf '\n  bash: add this line to ~/.bashrc:\n    %s\n' "$line"
+    local bash_comp_dir="${BASH_COMPLETION_USER_DIR:-$HOME/.local/share/bash-completion/completions}"
+    local bash_file="$bash_comp_dir/webaudt"
+    mkdir -p "$bash_comp_dir"
+    if "$src" completion bash >"$bash_file" 2>/dev/null; then
+        printf '  bash: installed -> %s\n' "$bash_file"
     fi
 }
 
@@ -87,4 +76,4 @@ printf '\n  Shell completion:\n'
 install_zsh_completion
 install_bash_completion
 
-printf '\n  Done. Run `webaudt doctor` to verify dependencies.\n'
+printf '\n  Done. Run `webaudt doctor` to verify.\n'
