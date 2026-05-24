@@ -66,6 +66,11 @@ path = "/home/user/Sites/mysite.com"
 type = "both"
 composer_path = "/home/user/Sites/mysite.com"
 npm_path = "/home/user/Sites/mysite.com/www"
+# composer_bin / npm_bin are auto-detected at `add` time and only persisted
+# when they differ from the global default. Edit freely to point at a
+# project-local binary (e.g. `bin/composer`, `composer.phar`, or a specific
+# `~/.nvm/versions/node/<v>/bin/npm`).
+composer_bin = "/home/user/Sites/mysite.com/bin/composer"
 ```
 
 ## Shell completion

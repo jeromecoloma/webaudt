@@ -55,6 +55,8 @@ Options for 'add':
   --type <t>             composer | npm | both
   --composer-path <dir>  Explicit composer audit path
   --npm-path <dir>       Explicit npm audit path
+  --composer-bin <path>  Override the composer binary for this site
+  --npm-bin <path>       Override the npm binary for this site
 
 Options for 'refresh':
   --all                  Force-refresh every site (ignore TTL)

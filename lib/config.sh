@@ -68,6 +68,9 @@ config_validate() {
         composer_path=$(printf '%s' "$s" | jq -r '.composer_path // ""')
         npm_path=$(printf '%s' "$s"      | jq -r '.npm_path // ""')
         enabled=$(printf '%s' "$s"       | jq -r '.enabled // true')
+        local composer_bin npm_bin
+        composer_bin=$(printf '%s' "$s" | jq -r '.composer_bin // ""')
+        npm_bin=$(printf '%s' "$s"      | jq -r '.npm_bin // ""')
 
         [[ -n "$name" ]] || common_die "sites[$i]: name must be non-empty"
         [[ -z "${seen[$name]:-}" ]] || common_die "duplicate site name: $name"
@@ -78,6 +81,13 @@ config_validate() {
         [[ -z "$composer_path" || "$composer_path" == /* ]] || common_die "sites[$name].composer_path must be absolute, got: $composer_path"
         [[ -z "$npm_path"      || "$npm_path"      == /* ]] || common_die "sites[$name].npm_path must be absolute, got: $npm_path"
         case "$enabled" in true|false) ;; *) common_die "sites[$name].enabled must be true|false, got: $enabled" ;; esac
+        # composer_bin / npm_bin are free-form (path or PATH-resolvable name); just disallow empty strings.
+        if printf '%s' "$s" | jq -e 'has("composer_bin")' >/dev/null; then
+            [[ -n "$composer_bin" ]] || common_die "sites[$name].composer_bin must be a non-empty string"
+        fi
+        if printf '%s' "$s" | jq -e 'has("npm_bin")' >/dev/null; then
+            [[ -n "$npm_bin" ]] || common_die "sites[$name].npm_bin must be a non-empty string"
+        fi
     done
 }
 

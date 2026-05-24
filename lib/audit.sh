@@ -154,8 +154,10 @@ audit_run_site() {
     fi
 
     local composer_bin npm_bin
-    composer_bin=$(config_setting composer_bin composer)
-    npm_bin=$(config_setting npm_bin npm)
+    composer_bin=$(printf '%s' "$site_json" | jq -r '.composer_bin // empty')
+    [[ -z "$composer_bin" ]] && composer_bin=$(config_setting composer_bin composer)
+    npm_bin=$(printf '%s' "$site_json" | jq -r '.npm_bin // empty')
+    [[ -z "$npm_bin" ]] && npm_bin=$(config_setting npm_bin npm)
 
     local hash start end
     hash=$(common_hash "$path")

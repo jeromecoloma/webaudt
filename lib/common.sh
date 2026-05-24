@@ -88,10 +88,11 @@ common_use_emoji() {
     [[ -z "${AUDT_NO_EMOJI:-}" && -z "${WEBAUDT_NO_EMOJI:-}" ]]
 }
 
-# Map severity bucket to icon (emoji or ASCII fallback).
+# Map severity bucket to a small colored glyph. Single-cell Unicode dots so
+# columns align cleanly. Opt into chunky emoji via WEBAUDT_EMOJI_ICONS=1.
 common_status_icon() {
     local status="$1"
-    if common_use_emoji; then
+    if [[ -n "${WEBAUDT_EMOJI_ICONS:-}" ]] && common_use_emoji; then
         case "$status" in
             critical) printf '🔴' ;;
             high)     printf '🟠' ;;
@@ -104,7 +105,11 @@ common_status_icon() {
             disabled) printf '🚫' ;;
             *)        printf '?' ;;
         esac
-    else
+        return
+    fi
+
+    # ASCII-only mode (no color, no Unicode).
+    if [[ -n "${AUDT_NO_EMOJI:-}" || -n "${WEBAUDT_NO_EMOJI:-}" ]]; then
         case "$status" in
             critical) printf '!' ;;
             high)     printf 'H' ;;
@@ -117,7 +122,24 @@ common_status_icon() {
             disabled) printf '-' ;;
             *)        printf '?' ;;
         esac
+        return
     fi
+
+    # Default: small colored Unicode glyph.
+    local glyph color
+    case "$status" in
+        critical) glyph='●'; color=$(common_severity_color critical) ;;
+        high)     glyph='●'; color=$(common_severity_color high) ;;
+        moderate) glyph='●'; color=$(common_severity_color moderate) ;;
+        low|info) glyph='●'; color=$(common_severity_color low) ;;
+        clean)    glyph='●'; color=$(common_severity_color clean) ;;
+        never)    glyph='○'; color='244' ;;
+        running)  glyph='◐'; color='39' ;;
+        error)    glyph='▲'; color=$(common_severity_color high) ;;
+        disabled) glyph='◌'; color='244' ;;
+        *)        glyph='·'; color='37' ;;
+    esac
+    common_color "$color" "$glyph"
 }
 
 common_severity_color() {

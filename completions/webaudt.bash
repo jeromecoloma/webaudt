@@ -33,6 +33,9 @@ _webaudt() {
         --composer-path|--npm-path)
             COMPREPLY=( $(compgen -d -- "$cur") )
             return ;;
+        --composer-bin|--npm-bin)
+            COMPREPLY=( $(compgen -f -- "$cur") )
+            return ;;
         --name)
             return ;;
     esac
@@ -40,7 +43,7 @@ _webaudt() {
     case "$cmd" in
         add)
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=( $(compgen -W "--name --type --composer-path --npm-path" -- "$cur") )
+                COMPREPLY=( $(compgen -W "--name --type --composer-path --npm-path --composer-bin --npm-bin" -- "$cur") )
             else
                 COMPREPLY=( $(compgen -d -- "$cur") )
             fi

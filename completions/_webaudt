@@ -49,6 +49,8 @@ _webaudt() {
                         '--type[Ecosystem type]:type:(composer npm both)' \
                         '--composer-path[Explicit composer audit path]:dir:_files -/' \
                         '--npm-path[Explicit npm audit path]:dir:_files -/' \
+                        '--composer-bin[Override composer binary for this site]:file:_files' \
+                        '--npm-bin[Override npm binary for this site]:file:_files' \
                         '*:site path:_files -/'
                     ;;
                 rm|remove)
