@@ -10,6 +10,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jeromecoloma/webaudt/internal/config"
@@ -174,22 +177,60 @@ func IsFresh(sitePath string, ttl int) bool {
 	return age < int64(ttl)
 }
 
-// AcquireLock creates the lock dir atomically. Returns false if already held.
+// AcquireLock creates the lock dir atomically and stamps it with the current PID.
+// If a stale lock (owner process no longer alive) is detected, it is reclaimed.
+// Returns false if the lock is held by a live process.
 func AcquireLock(sitePath string) bool {
 	if err := os.MkdirAll(filepath.Dir(LockFor(sitePath)), 0o755); err != nil {
 		return false
 	}
-	err := os.Mkdir(LockFor(sitePath), 0o755)
-	return err == nil
+	if tryMkdirLock(sitePath) {
+		return true
+	}
+	// Already exists — check the pid stamp.
+	if isLockStale(sitePath) {
+		_ = os.RemoveAll(LockFor(sitePath))
+		return tryMkdirLock(sitePath)
+	}
+	return false
+}
+
+func tryMkdirLock(sitePath string) bool {
+	dir := LockFor(sitePath)
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		return false
+	}
+	_ = os.WriteFile(filepath.Join(dir, "pid"), []byte(strconv.Itoa(os.Getpid())), 0o644)
+	return true
+}
+
+// isLockStale returns true if the lock's owner pid is missing or dead.
+func isLockStale(sitePath string) bool {
+	b, err := os.ReadFile(filepath.Join(LockFor(sitePath), "pid"))
+	if err != nil {
+		return true
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 {
+		return true
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return true
+	}
+	// On Unix, signal 0 reports whether the process is alive.
+	return p.Signal(syscall.Signal(0)) != nil
 }
 
 // ReleaseLock removes the lock dir (no-op if absent).
 func ReleaseLock(sitePath string) {
-	_ = os.Remove(LockFor(sitePath))
+	_ = os.RemoveAll(LockFor(sitePath))
 }
 
-// IsLocked reports whether an audit is in flight for the given site.
+// IsLocked reports whether an audit is in flight for the given site by a live process.
 func IsLocked(sitePath string) bool {
-	_, err := os.Stat(LockFor(sitePath))
-	return err == nil
+	if _, err := os.Stat(LockFor(sitePath)); err != nil {
+		return false
+	}
+	return !isLockStale(sitePath)
 }

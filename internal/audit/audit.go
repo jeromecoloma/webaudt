@@ -56,8 +56,25 @@ type composerAdvisory struct {
 	AffectedVersions string `json:"affectedVersions"`
 }
 
+type composerAdvisories map[string][]composerAdvisory
+
+// UnmarshalJSON tolerates composer's empty-advisories shape, which is `[]` instead of `{}`.
+func (c *composerAdvisories) UnmarshalJSON(b []byte) error {
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) || bytes.Equal(trimmed, []byte("[]")) {
+		*c = composerAdvisories{}
+		return nil
+	}
+	m := map[string][]composerAdvisory{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return err
+	}
+	*c = m
+	return nil
+}
+
 type composerOutput struct {
-	Advisories map[string][]composerAdvisory `json:"advisories"`
+	Advisories composerAdvisories `json:"advisories"`
 }
 
 // ParseComposer normalizes raw `composer audit --format=json` output into a cache.Ecosystem.
