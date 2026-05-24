@@ -1,0 +1,40 @@
+_assets/
+_scripts/
+
+# https://github.com/jeromecoloma/sessionx
+.sessionx.yaml
+
+# Linux
+*~
+
+# IDE
+.vscode/
+.idea/
+.tags
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+
+* of *.*
+*-[2][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]
+*-[2][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].*
+*-[2][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9].*
+*-[2][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9][0-9].*
+*-[2][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[a-z]*
+
+## ----------------
+## OS System Files
+## ----------------
+._*
+.VolumeIcon.icns
+.fseventsd
+ehthumbs.db
+# Icon?
+Thumbs.db
+.DS_Store
+.com.apple.timemachine.supported
+
