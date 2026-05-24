@@ -725,6 +725,12 @@ func (m *model) setPreviewContent() {
 
 // rebuildPreview regenerates the right-pane body for the currently-selected site.
 func (m *model) rebuildPreview() {
+	defer func() {
+		if m.previewReady {
+			m.preview.GotoTop()
+			m.setPreviewContent()
+		}
+	}()
 	if len(m.sites) == 0 {
 		m.previewContent = ui.Dim("no sites registered yet.")
 		return
@@ -739,7 +745,10 @@ func (m *model) rebuildPreview() {
 	b.WriteString(ui.Dim("type:  ") + string(row.site.Type) + "\n")
 
 	if row.entry == nil {
-		b.WriteString("\n" + ui.Dim("(never checked — press r to refresh)") + "\n")
+		b.WriteString("\n" + ui.Warn("NOT YET AUDITED") + "\n")
+		b.WriteString("\n" + ui.Dim("This site has not been audited yet.") + "\n")
+		b.WriteString(ui.Dim("Press ") + ui.Bold("r") + ui.Dim(" to run an audit for this site,") + "\n")
+		b.WriteString(ui.Dim("or ") + ui.Bold("R") + ui.Dim(" to audit all sites.") + "\n")
 		m.previewContent = b.String()
 		return
 	}
@@ -783,10 +792,6 @@ func (m *model) rebuildPreview() {
 		}
 	}
 	m.previewContent = b.String()
-	if m.previewReady {
-		m.preview.GotoTop()
-		m.setPreviewContent()
-	}
 }
 
 type advGroup struct {
