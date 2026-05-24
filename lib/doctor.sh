@@ -29,6 +29,23 @@ doctor_check() {
     fi
 }
 
+doctor_print_line() {
+    local line="$1"
+    local status="${line%%$'\t'*}"
+    local rest="${line#*$'\t'}"
+    local name="${rest%%$'\t'*}"
+    local detail="${rest#*$'\t'}"
+    local mark color
+    case "$status" in
+        OK)       mark="✓"; color="32" ;;
+        MISSING)  mark="✗"; color="31" ;;
+        OUTDATED) mark="!"; color="33" ;;
+        UNKNOWN)  mark="?"; color="33" ;;
+        *)        mark="·"; color="37" ;;
+    esac
+    printf '  %s  %-10s  %s\n' "$(common_color "$color" "$mark")" "$name" "$detail"
+}
+
 doctor_install_hints() {
     cat <<'EOF'
 
@@ -41,6 +58,10 @@ EOF
 }
 
 doctor_run() {
+    common_banner
+    printf '\n'
+    common_heading "dependency check"
+    printf '\n'
     local rc=0
     local results=()
 
@@ -59,13 +80,15 @@ doctor_run() {
 
     local r
     for r in "${results[@]}"; do
-        printf '%s\n' "$r"
+        doctor_print_line "$r"
         [[ "${r%%$'\t'*}" == "OK" ]] || rc=1
     done
 
-    printf '\nOptional (only needed for sites of that type):\n'
+    printf '\n'
+    common_heading "optional (only needed for sites of that type)"
+    printf '\n'
     for r in "${opt_results[@]}"; do
-        printf '%s\n' "$r"
+        doctor_print_line "$r"
     done
 
     # yq Go vs Python detection.
@@ -77,11 +100,12 @@ doctor_run() {
         fi
     fi
 
+    printf '\n'
     if (( rc != 0 )); then
         doctor_install_hints
-        printf '\nwebaudt doctor: one or more dependencies are missing or outdated.\n' >&2
+        printf '\n  %s one or more dependencies are missing or outdated.\n' "$(common_color 31 '✗')" >&2
     else
-        printf '\nwebaudt doctor: all required dependencies OK.\n'
+        printf '  %s all required dependencies OK.\n' "$(common_color 32 '✓')"
     fi
     return $rc
 }

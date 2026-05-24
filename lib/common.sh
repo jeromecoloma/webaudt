@@ -125,6 +125,41 @@ common_severity_color() {
     esac
 }
 
+# Pretty banner. Uses gum style when available, plain ANSI otherwise.
+common_banner() {
+    local mode="${1:-full}"   # full | mini
+    local art="\
+░█░█░█▀▀░█▀▄░█▀█░█░█░█▀▄░▀█▀
+░█▄█░█▀▀░█▀▄░█▀█░█░█░█░█░░█░
+░▀░▀░▀▀▀░▀▀░░▀░▀░▀▀▀░▀▀░░░▀░"
+    local tagline="composer + npm audit monitor"
+    local version="v${WEBAUDT_VERSION}"
+
+    if command -v gum >/dev/null 2>&1 && common_use_color; then
+        gum style \
+            --border rounded \
+            --border-foreground 39 \
+            --foreground 51 \
+            --padding "1 3" \
+            --margin "0" \
+            --align center \
+            "$art" "" "$(printf '%s   %s' "$tagline" "$version")"
+    else
+        printf '\n%s\n\n  %s   %s\n\n' "$art" "$tagline" "$version"
+    fi
+}
+
+# Compact one-line section heading.
+common_heading() {
+    local text="$1"
+    if command -v gum >/dev/null 2>&1 && common_use_color; then
+        gum style --foreground 51 --bold "▸ $text"
+    else
+        common_color '1;36' "▸ $text"
+        printf '\n'
+    fi
+}
+
 common_die() {
     printf 'webaudt: %s\n' "$*" >&2
     exit 1

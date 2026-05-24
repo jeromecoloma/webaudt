@@ -74,15 +74,17 @@ registry_add() {
 
     # Confirmation block.
     local cpath_disp="${composer_path:-—}" npath_disp="${npm_path:-—}"
-    printf 'Register site:\n'
-    printf '  name:           %s\n' "$name"
-    printf '  path:           %s\n' "$abs"
-    printf '  type:           %s\n' "$type"
+    printf '\n'
+    common_heading "register site"
+    printf '\n'
+    printf '  %s  %s\n' "$(common_color '1;37' 'name:          ')" "$(common_color 51  "$name")"
+    printf '  %s  %s\n' "$(common_color '1;37' 'path:          ')" "$abs"
+    printf '  %s  %s\n' "$(common_color '1;37' 'type:          ')" "$(common_color 33  "$type")"
     if [[ "$composer_path" == "$abs" && "$npm_path" == "$abs" ]]; then
-        printf '  audit path:     %s\n' "$abs"
+        printf '  %s  %s\n' "$(common_color '1;37' 'audit path:    ')" "$abs"
     else
-        [[ "$type" == composer || "$type" == both ]] && printf '  composer audit: %s\n' "$cpath_disp"
-        [[ "$type" == npm      || "$type" == both ]] && printf '  npm audit:      %s\n' "$npath_disp"
+        [[ "$type" == composer || "$type" == both ]] && printf '  %s  %s\n' "$(common_color '1;37' 'composer audit:')" "$cpath_disp"
+        [[ "$type" == npm      || "$type" == both ]] && printf '  %s  %s\n' "$(common_color '1;37' 'npm audit:     ')" "$npath_disp"
     fi
     printf '\n'
 
@@ -108,7 +110,7 @@ registry_add() {
     new=$(printf '%s' "$current" | jq --argjson s "$site_obj" '.sites = ((.sites // []) + [$s])')
     printf '%s' "$new" | config_write_json
 
-    printf 'Registered: %s\n' "$name"
+    printf '  %s registered %s\n\n' "$(common_color 32 '✓')" "$(common_color '1;36' "$name")"
 }
 
 registry_rm() {
@@ -130,19 +132,34 @@ registry_rm() {
     new=$(printf '%s' "$current" | jq --arg n "$name" '.sites = ((.sites // []) | map(select(.name != $n)))')
     printf '%s' "$new" | config_write_json
     cache_delete "$path"
-    printf 'Removed: %s\n' "$name"
+    printf '  %s removed %s\n\n' "$(common_color 32 '✓')" "$(common_color '1;36' "$name")"
 }
 
 registry_list() {
     local s name type path ttl
     ttl=$(config_setting cache_ttl 3600)
-    printf '%-20s  %-10s  %-12s  %s\n' "NAME" "TYPE" "LAST" "PATH"
+
+    local n
+    n=$(config_get | jq '(.sites // []) | length')
+    if (( n == 0 )); then
+        common_heading "registered sites"
+        printf '\n  (none yet — try: webaudt add /path/to/site)\n\n'
+        return 0
+    fi
+
+    common_heading "registered sites ($n)"
+    printf '\n'
+
+    local hdr
+    hdr=$(printf '  %s   %-22s %-8s  %-12s  %s\n' ' ' "NAME" "TYPE" "LAST" "PATH")
+    common_color '1;37' "$hdr"
+
     while IFS= read -r s; do
         [[ -z "$s" ]] && continue
         name=$(printf '%s' "$s" | jq -r '.name')
         type=$(printf '%s' "$s" | jq -r '.type')
         path=$(printf '%s' "$s" | jq -r '.path')
-        local last="never" worst="-"
+        local last="never" worst="never" icon
         if cache_exists "$path"; then
             local c checked
             c=$(cache_read "$path")
@@ -150,6 +167,10 @@ registry_list() {
             (( checked > 0 )) && last=$(common_relative_time "$checked")
             worst=$(audit_cache_worst "$c")
         fi
-        printf '%-20s  %-10s  %-12s  %s  [%s]\n' "$name" "$type" "$last" "$path" "$worst"
+        icon=$(common_status_icon "$worst")
+        local worst_col
+        worst_col=$(common_color "$(common_severity_color "$worst")" "$worst")
+        printf '  %s   %-22s %-8s  %-12s  %s  [%s]\n' "$icon" "$name" "$type" "$last" "$path" "$worst_col"
     done < <(config_sites)
+    printf '\n'
 }

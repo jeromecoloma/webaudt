@@ -36,8 +36,8 @@ source "$WEBAUDT_LIB/ui.sh"
 source "$WEBAUDT_LIB/doctor.sh"
 
 usage() {
+    common_banner
     cat <<EOF
-webaudt v$WEBAUDT_VERSION — composer/npm audit monitor
 
 Usage:
   webaudt                       Open TUI

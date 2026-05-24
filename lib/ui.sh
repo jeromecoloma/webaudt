@@ -80,8 +80,18 @@ ui_open() {
     sites_n=$(config_get | jq '(.sites // []) | length')
 
     if (( sites_n == 0 )); then
-        printf 'webaudt: no sites registered yet.\n'
-        printf 'Add one with: webaudt add /path/to/site\n'
+        common_banner
+        printf '\n'
+        if command -v gum >/dev/null 2>&1 && common_use_color; then
+            gum style --foreground 244 --padding "0 2" \
+                "no sites registered yet." \
+                "" \
+                "get started:" \
+                "  $(gum style --foreground 51 'webaudt add /path/to/site')"
+        else
+            printf '  no sites registered yet.\n\n  get started:\n    webaudt add /path/to/site\n'
+        fi
+        printf '\n'
         return 0
     fi
 
@@ -113,5 +123,6 @@ ui_open() {
         --bind "r:execute-silent($self _refresh_one {2})+reload($self _list)" \
         --bind "R:execute($self refresh --all)+reload($self _list)" \
         --bind "enter:execute($self _details {2})" \
-        --header "r: refresh site · R: refresh all · enter: full details · esc: quit"
+        --color "border:39,header:51,prompt:51,pointer:208,marker:46,info:244" \
+        --header $'  webaudt · r refresh · R refresh all · enter details · esc quit\n'
 }

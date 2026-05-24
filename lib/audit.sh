@@ -274,14 +274,17 @@ audit_refresh() {
         return 0
     fi
 
+    common_heading "refreshing ${#targets[@]} site(s)"
+    printf '\n'
     local s name
     for s in "${targets[@]}"; do
         name=$(printf '%s' "$s" | jq -r '.name')
         while [ "$(jobs -rp | wc -l)" -ge "$parallel" ]; do wait -n; done
         ( audit_run_site "$s" ) &
-        printf 'webaudt: refreshing %s\n' "$name"
+        printf '  %s %s\n' "$(common_color 33 '⟳')" "$name"
     done
     wait
+    printf '  %s done\n\n' "$(common_color 32 '✓')"
 
     # Compute worst severity across refreshed targets and exit accordingly.
     local worst="clean"
