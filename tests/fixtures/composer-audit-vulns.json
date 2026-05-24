@@ -1,0 +1,36 @@
+{
+  "advisories": {
+    "symfony/http-kernel": [
+      {
+        "advisoryId": "PKSA-aaaa-bbbb-cccc",
+        "cve": "CVE-2024-12345",
+        "title": "RCE via deserialization in HttpKernel",
+        "severity": "critical",
+        "affectedVersions": ">=4.0,<4.4.50",
+        "reportedAt": "2024-05-01T00:00:00+00:00",
+        "sources": []
+      },
+      {
+        "advisoryId": "PKSA-dddd-eeee-ffff",
+        "cve": "CVE-2024-23456",
+        "title": "XSS in error page",
+        "severity": "high",
+        "affectedVersions": ">=4.0,<4.4.40",
+        "reportedAt": "2024-03-01T00:00:00+00:00",
+        "sources": []
+      }
+    ],
+    "guzzlehttp/guzzle": [
+      {
+        "advisoryId": "PKSA-gggg-hhhh-iiii",
+        "cve": "CVE-2023-99999",
+        "title": "Header injection",
+        "severity": "medium",
+        "affectedVersions": ">=7.0,<7.4.5",
+        "reportedAt": "2023-09-01T00:00:00+00:00",
+        "sources": []
+      }
+    ]
+  },
+  "abandoned": {}
+}

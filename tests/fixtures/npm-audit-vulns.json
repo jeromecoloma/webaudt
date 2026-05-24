@@ -1,0 +1,25 @@
+{
+  "vulnerabilities": {
+    "lodash": {
+      "name": "lodash",
+      "severity": "high",
+      "via": [
+        { "name": "lodash", "title": "Prototype pollution", "url": "https://example/advisories/lodash-1" }
+      ],
+      "range": "<4.17.21",
+      "fixAvailable": { "name": "lodash", "version": "4.17.21" }
+    },
+    "minimist": {
+      "name": "minimist",
+      "severity": "moderate",
+      "via": ["lodash"],
+      "range": "<1.2.6",
+      "fixAvailable": false
+    }
+  },
+  "metadata": {
+    "vulnerabilities": {
+      "critical": 0, "high": 1, "moderate": 1, "low": 0, "info": 0, "total": 2
+    }
+  }
+}
