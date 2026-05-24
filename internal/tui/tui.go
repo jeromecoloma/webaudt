@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/muesli/reflow/wrap"
 
@@ -632,7 +633,8 @@ func (m *model) resizePreview() {
 		m.preview.Width = w
 		m.preview.Height = h
 	}
-	m.setPreviewContent()
+	// Rebuild so package tables size to the new viewport width.
+	m.rebuildPreview()
 }
 
 // setPreviewContent wraps m.previewContent for the current viewport width,
@@ -645,8 +647,18 @@ func (m *model) setPreviewContent() {
 	if wrapWidth < 8 {
 		wrapWidth = 8
 	}
-	wrapped := wrap.String(wordwrap.String(m.previewContent, wrapWidth), wrapWidth)
-	wrapped = strings.TrimRight(wrapped, "\n")
+	// Wrap prose lines, but pass table-border lines through untouched so the
+	// rounded borders survive.
+	var out []string
+	for _, line := range strings.Split(m.previewContent, "\n") {
+		if isTableLine(line) {
+			out = append(out, line)
+			continue
+		}
+		w := wrap.String(wordwrap.String(line, wrapWidth), wrapWidth)
+		out = append(out, w)
+	}
+	wrapped := strings.TrimRight(strings.Join(out, "\n"), "\n")
 	m.preview.SetContent(wrapped)
 	if wrapped == "" {
 		m.previewWrappedTotal = 0
@@ -708,27 +720,9 @@ func (m *model) rebuildPreview() {
 		const perPkgLimit = 6
 		for _, g := range groups {
 			b.WriteString("\n" + ui.Bold(g.pkg) + "\n")
-			n := len(g.items)
-			if n > perPkgLimit {
-				n = perPkgLimit
-			}
-			for i := 0; i < n; i++ {
-				a := g.items[i]
-				badge := "[" + ui.SeverityBadge(a.Severity) + "]"
-				id := a.ID
-				if id == "" {
-					id = "(no id)"
-				}
-				b.WriteString(fmt.Sprintf("  %s %s\n", id, badge))
-				if a.Title != "" {
-					b.WriteString("    " + ui.Dim(stripCVEPrefix(a.Title, a.ID)) + "\n")
-				}
-				if a.Affected != "" {
-					b.WriteString("    " + ui.Dim("affects: "+compactVersionRange(a.Affected)) + "\n")
-				}
-			}
+			b.WriteString(m.renderPackageTable(g, perPkgLimit) + "\n")
 			if len(g.items) > perPkgLimit {
-				b.WriteString("  " + ui.Dim(fmt.Sprintf("… and %d more in this package", len(g.items)-perPkgLimit)) + "\n")
+				b.WriteString(ui.Dim(fmt.Sprintf("  … and %d more in this package", len(g.items)-perPkgLimit)) + "\n")
 			}
 		}
 	}
@@ -742,6 +736,71 @@ func (m *model) rebuildPreview() {
 type advGroup struct {
 	pkg   string
 	items []cache.Advisory
+}
+
+// isTableLine returns true if the rendered line is part of a lipgloss table
+// (contains box-drawing chars). Such lines must not be re-wrapped.
+func isTableLine(s string) bool {
+	for _, r := range s {
+		switch r {
+		case '─', '│', '╭', '╮', '╰', '╯', '├', '┤', '┬', '┴', '┼':
+			return true
+		}
+	}
+	return false
+}
+
+// renderPackageTable renders one bordered table containing up to `limit`
+// advisories for a package. Each row has two stacked lines: "CVE [severity]"
+// on top, title underneath.
+func (m *model) renderPackageTable(g advGroup, limit int) string {
+	n := len(g.items)
+	if n > limit {
+		n = limit
+	}
+	width := m.preview.Width
+	if width <= 0 {
+		width = m.previewWidth() - 4
+	}
+	if width < 24 {
+		width = 24
+	}
+	rows := make([][]string, 0, n)
+	for i := 0; i < n; i++ {
+		a := g.items[i]
+		id := a.ID
+		if id == "" {
+			id = "(no id)"
+		}
+		header := id + "  [" + ui.SeverityBadge(a.Severity) + "]"
+		title := stripCVEPrefix(a.Title, a.ID)
+		if title == "" {
+			title = ui.Dim("(no title)")
+		} else {
+			title = ui.Dim(title)
+		}
+		affects := ""
+		if a.Affected != "" {
+			affects = ui.Dim("affects: " + compactVersionRange(a.Affected))
+		}
+		cell := header + "\n" + title
+		if affects != "" {
+			cell += "\n" + affects
+		}
+		rows = append(rows, []string{cell})
+	}
+	t := table.New().
+		Border(lipgloss.RoundedBorder()).
+		BorderStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("244"))).
+		BorderRow(true).
+		BorderColumn(true).
+		Width(width).
+		Wrap(true).
+		Rows(rows...).
+		StyleFunc(func(_, _ int) lipgloss.Style {
+			return lipgloss.NewStyle().Padding(0, 1)
+		})
+	return t.Render()
 }
 
 // stripCVEPrefix removes a leading "CVE-...: " prefix from a title if it
