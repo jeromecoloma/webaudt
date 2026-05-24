@@ -477,8 +477,40 @@ func (m *model) contentHeight() int {
 	return h
 }
 
-// renderPane wraps a body string in a bordered box. No inline title — pane
-// identifiers live in the footer to avoid getting cut off by terminal chrome.
+// injectFieldsetTitle overwrites the top border of a rendered lipgloss box with
+// a right-aligned fieldset-style inline label: "╭──...── label ──╮".
+func injectFieldsetTitle(rendered, label string, borderColor lipgloss.Color) string {
+	if label == "" {
+		return rendered
+	}
+	lines := strings.Split(rendered, "\n")
+	if len(lines) == 0 {
+		return rendered
+	}
+	top := lines[0]
+	totalW := lipgloss.Width(top)
+	if totalW < 12 {
+		return rendered
+	}
+
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	dashStyle := lipgloss.NewStyle().Foreground(borderColor)
+
+	inline := " " + labelStyle.Render(label) + " "
+	inlineW := lipgloss.Width(inline)
+
+	// caps (2) + leading dashes (>=2) + inline + trailing dashes (2)
+	leading := totalW - 2 - 2 - inlineW
+	if leading < 2 {
+		return rendered
+	}
+	newTop := dashStyle.Render("╭"+strings.Repeat("─", leading)) + inline + dashStyle.Render("──╮")
+	lines[0] = newTop
+	return strings.Join(lines, "\n")
+}
+
+// renderPane wraps a body string in a bordered box with a fieldset-style title
+// overlaid on the top border (label + optional badge).
 func (m *model) renderPane(pane int, body string, contentWidth int) string {
 	active := m.focus == pane
 	borderColor := lipgloss.Color("244")
@@ -508,7 +540,7 @@ func (m *model) renderPane(pane int, body string, contentWidth int) string {
 	}
 	body = strings.Join(bodyLines, "\n")
 
-	return lipgloss.NewStyle().
+	rendered := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
 		Width(contentWidth).
@@ -518,6 +550,19 @@ func (m *model) renderPane(pane int, body string, contentWidth int) string {
 		AlignVertical(lipgloss.Top).
 		Padding(0, 1).
 		Render(body)
+
+	return injectFieldsetTitle(rendered, m.fieldsetTitle(pane), borderColor)
+}
+
+// fieldsetTitle returns the label shown on a pane's top border.
+func (m *model) fieldsetTitle(pane int) string {
+	switch pane {
+	case paneSidebar:
+		return "Sites"
+	case panePreview:
+		return "Details"
+	}
+	return ""
 }
 
 // renderPreviewPane renders the preview viewport inside a bordered box,
@@ -548,7 +593,7 @@ func (m *model) renderPreviewPane() string {
 	}
 	body := strings.Join(lines, "\n")
 
-	return lipgloss.NewStyle().
+	rendered := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
 		Width(contentWidth).
@@ -558,6 +603,8 @@ func (m *model) renderPreviewPane() string {
 		AlignVertical(lipgloss.Top).
 		Padding(0, 1).
 		Render(body)
+
+	return injectFieldsetTitle(rendered, m.fieldsetTitle(panePreview), borderColor)
 }
 
 // scrollbarColumn returns one " │"/" ┃" string per visible row. Thumb size
