@@ -40,7 +40,7 @@ func Run() error {
 		return err
 	}
 	m := newModel(cfg)
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err = p.Run()
 	return err
 }
@@ -125,6 +125,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "refreshed " + msg.name
 		}
 		return m, nil
+
+	case tea.MouseMsg:
+		if m.filterOpen {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.preview, cmd = m.preview.Update(msg)
+		return m, cmd
 
 	case tea.KeyMsg:
 		if m.filterOpen {
