@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -55,6 +56,12 @@ type model struct {
 	preview             viewport.Model
 	previewReady        bool
 	previewWrappedTotal int // total lines after wrap, for scrollbar math
+
+	// filter modal
+	filterOpen    bool
+	filterInput   textinput.Model
+	filterMatches []int // indices into m.sites
+	filterCursor  int   // index into filterMatches
 }
 
 type siteRow struct {
@@ -119,9 +126,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.filterOpen {
+			return m.updateFilter(msg)
+		}
 		switch msg.String() {
-		case "q", "ctrl+c", "esc":
+		case "ctrl+c":
 			return m, tea.Quit
+		case "q", "esc":
+			return m, tea.Quit
+		case "/":
+			m.openFilter()
+			return m, textinput.Blink
 		case "1":
 			m.focus = paneSidebar
 			return m, nil
@@ -132,7 +147,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focus = (m.focus + 1) % 2
 			return m, nil
 		case "?":
-			m.statusMsg = "Keys: 1/2 pane · j/k or ↑↓ move · r refresh · R all · ? help · q quit"
+			m.statusMsg = "Keys: 1/2 pane · j/k or ↑↓ move · / filter · r refresh · R all · ? help · q quit"
 			return m, nil
 		case "r":
 			return m, m.refreshCurrent()
@@ -178,7 +193,259 @@ func (m *model) View() string {
 	preview := m.renderPreviewPane()
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, preview)
+	if m.filterOpen {
+		body = overlayCenter(body, m.renderFilterModal())
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
+}
+
+// ---- filter modal ----
+
+func (m *model) openFilter() {
+	ti := textinput.New()
+	ti.Placeholder = "filter sites…"
+	ti.Prompt = "› "
+	ti.CharLimit = 64
+	ti.Width = 30
+	ti.Focus()
+	m.filterInput = ti
+	m.filterOpen = true
+	m.filterCursor = 0
+	m.recomputeFilterMatches()
+}
+
+func (m *model) closeFilter() {
+	m.filterOpen = false
+	m.filterInput.Blur()
+	m.filterMatches = nil
+}
+
+func (m *model) recomputeFilterMatches() {
+	q := strings.ToLower(strings.TrimSpace(m.filterInput.Value()))
+	m.filterMatches = m.filterMatches[:0]
+	for i, row := range m.sites {
+		if q == "" || strings.Contains(strings.ToLower(row.site.Name), q) || strings.Contains(strings.ToLower(row.site.Path), q) {
+			m.filterMatches = append(m.filterMatches, i)
+		}
+	}
+	if m.filterCursor >= len(m.filterMatches) {
+		m.filterCursor = max(0, len(m.filterMatches)-1)
+	}
+}
+
+func (m *model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.closeFilter()
+		return m, nil
+	case "enter":
+		if len(m.filterMatches) > 0 {
+			m.cursor = m.filterMatches[m.filterCursor]
+			m.focus = paneSidebar
+			m.rebuildPreview()
+		}
+		m.closeFilter()
+		return m, nil
+	case "down", "ctrl+n", "tab":
+		if m.filterCursor < len(m.filterMatches)-1 {
+			m.filterCursor++
+		}
+		return m, nil
+	case "up", "ctrl+p", "shift+tab":
+		if m.filterCursor > 0 {
+			m.filterCursor--
+		}
+		return m, nil
+	}
+	prev := m.filterInput.Value()
+	var cmd tea.Cmd
+	m.filterInput, cmd = m.filterInput.Update(msg)
+	if m.filterInput.Value() != prev {
+		m.filterCursor = 0
+		m.recomputeFilterMatches()
+	}
+	return m, cmd
+}
+
+func (m *model) renderFilterModal() string {
+	width := 48
+	if width > m.width-4 {
+		width = m.width - 4
+	}
+	maxRows := 10
+	if h := m.height - 8; h < maxRows {
+		maxRows = h
+	}
+	if maxRows < 3 {
+		maxRows = 3
+	}
+
+	var b strings.Builder
+	b.WriteString(ui.Bold("Filter sites"))
+	b.WriteString("\n")
+	b.WriteString(m.filterInput.View())
+	b.WriteString("\n")
+
+	if len(m.filterMatches) == 0 {
+		b.WriteString(ui.Dim("  (no matches)"))
+	} else {
+		start := 0
+		if m.filterCursor >= maxRows {
+			start = m.filterCursor - maxRows + 1
+		}
+		end := start + maxRows
+		if end > len(m.filterMatches) {
+			end = len(m.filterMatches)
+		}
+		for i := start; i < end; i++ {
+			idx := m.filterMatches[i]
+			row := m.sites[idx]
+			icon := ui.StatusIcon(row.worst)
+			name := truncate(row.site.Name, width-8)
+			line := fmt.Sprintf("  %s %s", icon, name)
+			if i == m.filterCursor {
+				line = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("51")).Bold(true).
+					Render(fmt.Sprintf("▸ %s %s", icon, name))
+			}
+			b.WriteString(line)
+			if i < end-1 {
+				b.WriteString("\n")
+			}
+		}
+		if len(m.filterMatches) > maxRows {
+			b.WriteString("\n" + ui.Dim(fmt.Sprintf("  %d/%d matches", m.filterCursor+1, len(m.filterMatches))))
+		}
+	}
+	b.WriteString("\n" + ui.Dim("↑/↓ move · enter select · esc cancel"))
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("51")).
+		Padding(0, 1).
+		Width(width).
+		Render(b.String())
+}
+
+// overlayCenter places `over` centered on top of `bg`, replacing the lines
+// behind it. Both inputs are pre-rendered lipgloss strings.
+func overlayCenter(bg, over string) string {
+	bgLines := strings.Split(bg, "\n")
+	overLines := strings.Split(over, "\n")
+	bgH := len(bgLines)
+	overH := len(overLines)
+	if overH > bgH {
+		return over
+	}
+	overW := 0
+	for _, l := range overLines {
+		if w := lipgloss.Width(l); w > overW {
+			overW = w
+		}
+	}
+	bgW := 0
+	for _, l := range bgLines {
+		if w := lipgloss.Width(l); w > bgW {
+			bgW = w
+		}
+	}
+	top := (bgH - overH) / 2
+	left := (bgW - overW) / 2
+	if left < 0 {
+		left = 0
+	}
+	out := make([]string, bgH)
+	copy(out, bgLines)
+	for i, ol := range overLines {
+		row := top + i
+		if row < 0 || row >= bgH {
+			continue
+		}
+		bgLine := bgLines[row]
+		bgLineW := lipgloss.Width(bgLine)
+		// Right pad bg line to bgW.
+		padded := bgLine
+		if bgLineW < bgW {
+			padded += strings.Repeat(" ", bgW-bgLineW)
+		}
+		// Slice cells: prefix + over + suffix. Use simple byte slicing as a
+		// best-effort — overlay sits in the middle where ASCII is the norm in
+		// this app's rendered chrome.
+		prefix := truncateCells(padded, left)
+		suffix := dropCells(padded, left+overW)
+		out[row] = prefix + ol + suffix
+	}
+	return strings.Join(out, "\n")
+}
+
+// truncateCells keeps the first n display cells of s (ANSI-aware via lipgloss
+// width estimates on byte windows).
+func truncateCells(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	// Walk runes accumulating until we hit n cells. ANSI escapes pass through.
+	var b strings.Builder
+	var cells int
+	inEsc := false
+	for _, r := range s {
+		if inEsc {
+			b.WriteRune(r)
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEsc = false
+			}
+			continue
+		}
+		if r == 0x1b {
+			inEsc = true
+			b.WriteRune(r)
+			continue
+		}
+		w := lipgloss.Width(string(r))
+		if cells+w > n {
+			break
+		}
+		b.WriteRune(r)
+		cells += w
+	}
+	for cells < n {
+		b.WriteByte(' ')
+		cells++
+	}
+	return b.String()
+}
+
+// dropCells drops the first n display cells of s and returns the rest.
+func dropCells(s string, n int) string {
+	var b strings.Builder
+	var cells int
+	inEsc := false
+	for _, r := range s {
+		if inEsc {
+			if cells >= n {
+				b.WriteRune(r)
+			}
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEsc = false
+			}
+			continue
+		}
+		if r == 0x1b {
+			inEsc = true
+			if cells >= n {
+				b.WriteRune(r)
+			}
+			continue
+		}
+		w := lipgloss.Width(string(r))
+		if cells >= n {
+			b.WriteRune(r)
+			cells += w
+			continue
+		}
+		cells += w
+	}
+	return b.String()
 }
 
 // previewWidth = total width - sidebar's rendered width.
@@ -469,7 +736,7 @@ func (m *model) renderFooter() string {
 		}
 		hints = paneTag(1, "sites") + "  " + paneTag(2, "details") +
 			lipgloss.NewStyle().Foreground(lipgloss.Color("244")).
-				Render("   ·  j/k move · r refresh · R refresh all · ? help · q quit")
+				Render("   ·  j/k move · / filter · r refresh · R all · ? help · q quit")
 	}
 	return "  " + hints
 }
