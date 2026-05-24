@@ -457,10 +457,11 @@ func dropCells(s string, n int) string {
 	return b.String()
 }
 
-// previewWidth = total width - sidebar's rendered width.
-// Sidebar rendered width = sidebarWidth (content) + 2 (padding) + 2 (borders) = sidebarWidth + 4.
+// previewWidth = total width - sidebar's rendered width - own border chrome.
+// lipgloss .Width(W) already accounts for padding; only the 2 border cols are
+// added on top of W, so each pane's visual width is W + 2.
 func (m *model) previewWidth() int {
-	w := m.width - sidebarWidth - 4 - 4 // - sidebar chrome - own chrome
+	w := m.width - sidebarWidth - 2 - 2 // - sidebar chrome (border) - own border
 	if w < 20 {
 		w = 20
 	}
