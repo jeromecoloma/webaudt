@@ -1,18 +1,4 @@
 // Package tui is the bubbletea-based interactive terminal UI for webaudt.
-//
-// Layout: two panes side-by-side.
-//
-//   ┌──────────────────────┬─────────────────────────────┐
-//   │ [1] Sites            │ [2] Details                 │
-//   │  ● vendors.docomo... │ vendors.docomopacific.com   │
-//   │  ● pnccpalau.com     │ Path: ...                   │
-//   │                      │ Last: 5m ago                │
-//   │                      │ ...                         │
-//   └──────────────────────┴─────────────────────────────┘
-//     1/2 focus pane · j/k move · r refresh · R all · q quit
-//
-// Pane focus is jumpable with 1/2 like lazydocker; j/k (or ↑/↓) move within
-// the focused pane.
 package tui
 
 import (
@@ -20,9 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
+	"github.com/muesli/reflow/wrap"
 
 	"github.com/jeromecoloma/webaudt/internal/audit"
 	"github.com/jeromecoloma/webaudt/internal/cache"
@@ -34,35 +21,42 @@ import (
 const (
 	paneSidebar = 0
 	panePreview = 1
+
+	sidebarWidth = 32 // content width inside borders+padding
 )
 
-// Run launches the TUI. Returns after the user quits.
+func (m *model) chromeRows() int {
+	// footer(1) + top border(1) + bottom border(1) + 1 row of bottom-clipping safety
+	return 4
+}
+
+// Run launches the TUI.
 func Run() error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
 	m := newModel(cfg)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err = p.Run()
 	return err
 }
 
 type model struct {
-	cfg          *config.File
-	sites        []siteRow
-	cursor       int
-	focus        int // paneSidebar | panePreview
-	preview      viewport.Model
-	width        int
-	height       int
-	refreshing   map[string]bool
-	statusMsg    string
+	cfg            *config.File
+	sites          []siteRow
+	cursor         int
+	focus          int
+	width, height  int
+	previewScroll  int
+	refreshing     map[string]bool
+	statusMsg      string
+	previewContent string // re-built whenever site/size changes
 }
 
 type siteRow struct {
 	site  config.Site
-	entry *cache.Entry // nil if no cache
+	entry *cache.Entry
 	worst string
 }
 
@@ -72,13 +66,11 @@ func newModel(cfg *config.File) *model {
 		refreshing: map[string]bool{},
 		focus:      paneSidebar,
 	}
-	m.preview = viewport.New(0, 0)
-	m.reloadSites()
+	m.loadSites()
 	return m
 }
 
-// reloadSites re-reads cache for every registered site.
-func (m *model) reloadSites() {
+func (m *model) loadSites() {
 	m.sites = m.sites[:0]
 	for _, s := range m.cfg.Sites {
 		row := siteRow{site: s, worst: types.SevNever}
@@ -91,16 +83,15 @@ func (m *model) reloadSites() {
 		m.sites = append(m.sites, row)
 	}
 	if m.cursor >= len(m.sites) {
-		m.cursor = max0(len(m.sites) - 1)
+		m.cursor = max(0, len(m.sites)-1)
 	}
-	m.setPreviewContent()
+	m.rebuildPreview()
 }
 
-// ---- bubbletea Model interface ----
+// ---- bubbletea Model ----
 
 func (m *model) Init() tea.Cmd { return nil }
 
-// Messages sent from background audit goroutines.
 type refreshDoneMsg struct {
 	name string
 	err  error
@@ -111,12 +102,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.layoutPanes()
+		m.rebuildPreview()
 		return m, nil
 
 	case refreshDoneMsg:
 		delete(m.refreshing, msg.name)
-		m.reloadSites()
+		m.loadSites()
 		if msg.err != nil {
 			m.statusMsg = "refresh " + msg.name + ": " + msg.err.Error()
 		} else {
@@ -138,40 +129,56 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focus = (m.focus + 1) % 2
 			return m, nil
 		case "?":
-			m.statusMsg = helpLine()
+			m.statusMsg = "Keys: 1/2 pane · j/k or ↑↓ move · r refresh · R all · ? help · q quit"
 			return m, nil
 		case "r":
 			return m, m.refreshCurrent()
 		case "R":
 			return m, m.refreshAll()
 		}
-
 		if m.focus == paneSidebar {
 			switch msg.String() {
 			case "j", "down":
 				if m.cursor < len(m.sites)-1 {
 					m.cursor++
-					m.setPreviewContent()
+					m.previewScroll = 0
+					m.rebuildPreview()
 				}
 			case "k", "up":
 				if m.cursor > 0 {
 					m.cursor--
-					m.setPreviewContent()
+					m.previewScroll = 0
+					m.rebuildPreview()
 				}
 			case "g", "home":
 				m.cursor = 0
-				m.setPreviewContent()
+				m.previewScroll = 0
+				m.rebuildPreview()
 			case "G", "end":
-				m.cursor = max0(len(m.sites) - 1)
-				m.setPreviewContent()
+				m.cursor = max(0, len(m.sites)-1)
+				m.previewScroll = 0
+				m.rebuildPreview()
 			}
 			return m, nil
 		}
-
-		// Preview pane: hand off scroll keys to viewport.
-		var cmd tea.Cmd
-		m.preview, cmd = m.preview.Update(msg)
-		return m, cmd
+		// Preview pane focused: scroll content.
+		switch msg.String() {
+		case "j", "down":
+			m.previewScroll++
+		case "k", "up":
+			if m.previewScroll > 0 {
+				m.previewScroll--
+			}
+		case "ctrl+d", "pgdown":
+			m.previewScroll += m.contentHeight() / 2
+		case "ctrl+u", "pgup":
+			m.previewScroll = max(0, m.previewScroll-m.contentHeight()/2)
+		case "g", "home":
+			m.previewScroll = 0
+		case "G", "end":
+			m.previewScroll = max(0, m.previewLineCount()-m.contentHeight())
+		}
+		return m, nil
 	}
 	return m, nil
 }
@@ -180,121 +187,136 @@ func (m *model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return ""
 	}
-	sidebar := m.renderSidebar()
-	preview := m.renderPreview()
-	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, preview)
-
-	header := ui.Heading("webaudt")
 	footer := m.renderFooter()
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+	sidebar := m.renderPane(paneSidebar, m.renderSidebarBody(), sidebarWidth)
+	preview := m.renderPane(panePreview, m.renderPreviewBody(), m.previewWidth())
+
+	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, preview)
+	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
 }
 
-// layoutPanes sizes the panes based on the current terminal width/height.
-func (m *model) layoutPanes() {
-	sidebarWidth := 36
-	if m.width > 0 && sidebarWidth > m.width/2 {
-		sidebarWidth = m.width / 2
+// previewWidth = total width - sidebar's rendered width.
+// Sidebar rendered width = sidebarWidth (content) + 2 (padding) + 2 (borders) = sidebarWidth + 4.
+func (m *model) previewWidth() int {
+	w := m.width - sidebarWidth - 4 - 4 // - sidebar chrome - own chrome
+	if w < 20 {
+		w = 20
 	}
-	previewWidth := m.width - sidebarWidth - 4 // 2 borders × 2 panes ≈ 4 chars
-	if previewWidth < 20 {
-		previewWidth = 20
-	}
-	previewHeight := m.height - 4 // header + footer + borders
-	if previewHeight < 5 {
-		previewHeight = 5
-	}
-	m.preview.Width = previewWidth
-	m.preview.Height = previewHeight
-	m.setPreviewContent()
+	return w
 }
 
-// ---- rendering helpers ----
-
-func (m *model) renderSidebar() string {
-	sidebarWidth := 36
-	if m.width > 0 && sidebarWidth > m.width/2 {
-		sidebarWidth = m.width / 2
+// contentHeight is the inner usable height of a pane (lines that fit between
+// the top/bottom borders).
+func (m *model) contentHeight() int {
+	h := m.height - m.chromeRows()
+	if h < 5 {
+		h = 5
 	}
-	height := m.height - 4
-	if height < 5 {
-		height = 5
+	return h
+}
+
+// renderPane wraps a body string in a bordered box. No inline title — pane
+// identifiers live in the footer to avoid getting cut off by terminal chrome.
+func (m *model) renderPane(pane int, body string, contentWidth int) string {
+	active := m.focus == pane
+	borderColor := lipgloss.Color("244")
+	if active {
+		borderColor = lipgloss.Color("51")
 	}
 
-	var lines []string
+	wrapWidth := contentWidth - 2
+	if wrapWidth < 8 {
+		wrapWidth = contentWidth
+	}
+	var bodyLines []string
+	for _, line := range strings.Split(body, "\n") {
+		// wordwrap first (breaks on spaces), then wrap (hard-breaks long
+		// unbreakable tokens like CVE version ranges so lipgloss.Width()
+		// doesn't re-wrap them and overflow the pane's fixed Height).
+		wrapped := wrap.String(wordwrap.String(line, wrapWidth), wrapWidth)
+		parts := strings.Split(wrapped, "\n")
+		bodyLines = append(bodyLines, parts[0])
+		for _, cont := range parts[1:] {
+			bodyLines = append(bodyLines, "  "+cont)
+		}
+	}
+	maxLines := m.contentHeight()
+	if len(bodyLines) > maxLines {
+		bodyLines = bodyLines[:maxLines]
+	}
+	for len(bodyLines) < maxLines {
+		bodyLines = append(bodyLines, " ")
+	}
+	body = strings.Join(bodyLines, "\n")
+
+	// MaxHeight/MaxWidth clip the final rendered box (including borders) so a
+	// stray long line or ambiguous-width unicode rune can't push the bottom
+	// border off-screen. Height/Width set the minimum; MaxHeight/MaxWidth cap.
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Width(contentWidth).
+		Height(maxLines).
+		MaxWidth(contentWidth + 4).
+		MaxHeight(maxLines + 2).
+		AlignVertical(lipgloss.Top).
+		Padding(0, 1).
+		Render(body)
+}
+
+// ---- pane bodies ----
+
+func (m *model) renderSidebarBody() string {
 	if len(m.sites) == 0 {
-		lines = append(lines, ui.Dim("(no sites — webaudt add /path)"))
+		return ui.Dim("(no sites — run `webaudt add /path`)")
 	}
+	var lines []string
 	for i, row := range m.sites {
 		icon := ui.StatusIcon(row.worst)
 		if m.refreshing[row.site.Name] {
 			icon = ui.StatusIcon(types.SevRunning)
 		}
-		name := row.site.Name
+		name := truncate(row.site.Name, sidebarWidth-6)
+		prefix := "  "
+		nameStyled := name
 		if i == m.cursor {
-			name = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("51")).Render("▸ " + name)
-		} else {
-			name = "  " + name
+			prefix = lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Bold(true).Render("▸ ")
+			nameStyled = lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Bold(true).Render(name)
 		}
+		first := fmt.Sprintf("%s%s %s", prefix, icon, nameStyled)
+		lines = append(lines, first)
 		summary := compactSummary(row.entry)
-		line := fmt.Sprintf("%s %s", icon, name)
 		if summary != "" {
-			line += "  " + ui.Dim(summary)
+			lines = append(lines, "    "+ui.Dim(summary))
 		}
-		lines = append(lines, line)
 	}
-
-	body := strings.Join(lines, "\n")
-	style := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Width(sidebarWidth).
-		Height(height).
-		Padding(0, 1)
-	if m.focus == paneSidebar {
-		style = style.BorderForeground(lipgloss.Color("51"))
-	} else {
-		style = style.BorderForeground(lipgloss.Color("244"))
-	}
-	title := paneTitle("1 · sites", m.focus == paneSidebar)
-	return style.Render(title + "\n" + body)
+	return strings.Join(lines, "\n")
 }
 
-func (m *model) renderPreview() string {
-	width := m.preview.Width
-	height := m.preview.Height
-	style := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		Width(width).
-		Height(height).
-		Padding(0, 1)
-	if m.focus == panePreview {
-		style = style.BorderForeground(lipgloss.Color("51"))
-	} else {
-		style = style.BorderForeground(lipgloss.Color("244"))
+func (m *model) renderPreviewBody() string {
+	if m.previewContent == "" {
+		m.rebuildPreview()
 	}
-	title := paneTitle("2 · details", m.focus == panePreview)
-	return style.Render(title + "\n" + m.preview.View())
+	// Apply scroll offset.
+	lines := strings.Split(m.previewContent, "\n")
+	if m.previewScroll >= len(lines) {
+		m.previewScroll = max(0, len(lines)-1)
+	}
+	if m.previewScroll > 0 {
+		lines = lines[m.previewScroll:]
+	}
+	return strings.Join(lines, "\n")
 }
 
-func (m *model) renderFooter() string {
-	hints := "1/2 focus pane · j/k move · r refresh · R refresh all · ? help · q quit"
-	if m.statusMsg != "" {
-		hints = m.statusMsg
-	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("  " + hints)
+func (m *model) previewLineCount() int {
+	return len(strings.Split(m.previewContent, "\n"))
 }
 
-func paneTitle(text string, active bool) string {
-	if active {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Bold(true).Render(text)
-	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(text)
-}
-
-// setPreviewContent regenerates the right-pane content for the current site.
-func (m *model) setPreviewContent() {
+// rebuildPreview regenerates the right-pane body for the currently-selected site.
+func (m *model) rebuildPreview() {
 	if len(m.sites) == 0 {
-		m.preview.SetContent(ui.Dim("no sites registered yet."))
+		m.previewContent = ui.Dim("no sites registered yet.")
 		return
 	}
 	row := m.sites[m.cursor]
@@ -306,7 +328,7 @@ func (m *model) setPreviewContent() {
 
 	if row.entry == nil {
 		b.WriteString("\n" + ui.Dim("(never checked — press r to refresh)") + "\n")
-		m.preview.SetContent(b.String())
+		m.previewContent = b.String()
 		return
 	}
 
@@ -337,8 +359,10 @@ func (m *model) setPreviewContent() {
 		}
 		for i := 0; i < n; i++ {
 			a := p.eco.Advisories[i]
-			b.WriteString(fmt.Sprintf("   • %s (%s)\n     %s  %s\n",
-				a.ID, ui.SeverityBadge(a.Severity), a.Package, a.Affected))
+			b.WriteString(fmt.Sprintf("   • %s (%s)\n     %s\n", a.ID, ui.SeverityBadge(a.Severity), a.Package))
+			if a.Affected != "" {
+				b.WriteString("     " + ui.Dim(truncate(a.Affected, m.previewWidth()-8)) + "\n")
+			}
 			if a.Title != "" {
 				b.WriteString("     " + ui.Dim(a.Title) + "\n")
 			}
@@ -347,17 +371,41 @@ func (m *model) setPreviewContent() {
 			b.WriteString(fmt.Sprintf("   … and %d more\n", len(p.eco.Advisories)-10))
 		}
 	}
-	m.preview.SetContent(b.String())
-	m.preview.GotoTop()
+	m.previewContent = b.String()
 }
 
-// compactSummary renders the sidebar's right-side summary, e.g. "11U" / "1C 2H".
+func (m *model) renderFooter() string {
+	hints := m.statusMsg
+	if hints == "" {
+		paneTag := func(n int, label string) string {
+			marker := fmt.Sprintf("[%d]", n)
+			if m.focus == n-1 {
+				marker = lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Bold(true).Render(marker)
+				label = lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Render(label)
+			} else {
+				marker = lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(marker)
+				label = lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(label)
+			}
+			return marker + " " + label
+		}
+		hints = paneTag(1, "sites") + "  " + paneTag(2, "details") +
+			lipgloss.NewStyle().Foreground(lipgloss.Color("244")).
+				Render("   ·  j/k move · r refresh · R refresh all · ? help · q quit")
+	}
+	return "  " + hints
+}
+
+// compactSummary renders e.g. "11U" or "1C 2H".
 func compactSummary(entry *cache.Entry) string {
 	if entry == nil {
 		return ""
 	}
 	merged := mergeCounts(entry.Composer.Counts, entry.NPM.Counts)
-	return ui.CountsSummaryShort(merged)
+	s := ui.CountsSummaryShort(merged)
+	if s == "clean" {
+		return ""
+	}
+	return s
 }
 
 func mergeCounts(a, b cache.Counts) cache.Counts {
@@ -377,14 +425,10 @@ func (m *model) refreshCurrent() tea.Cmd {
 	if len(m.sites) == 0 {
 		return nil
 	}
-	site := m.sites[m.cursor].site
-	return m.startRefresh(site)
+	return m.startRefresh(m.sites[m.cursor].site)
 }
 
 func (m *model) refreshAll() tea.Cmd {
-	if len(m.sites) == 0 {
-		return nil
-	}
 	cmds := make([]tea.Cmd, 0, len(m.sites))
 	for _, row := range m.sites {
 		cmds = append(cmds, m.startRefresh(row.site))
@@ -402,13 +446,15 @@ func (m *model) startRefresh(site config.Site) tea.Cmd {
 	}
 }
 
-func helpLine() string {
-	return "Keys: 1/2 focus pane, j/k or ↑/↓ move, r refresh site, R refresh all, ? help, q quit"
-}
-
-func max0(n int) int {
-	if n < 0 {
-		return 0
+func truncate(s string, n int) string {
+	if n <= 0 {
+		return s
 	}
-	return n
+	if len(s) <= n {
+		return s
+	}
+	if n < 3 {
+		return s[:n]
+	}
+	return s[:n-1] + "…"
 }

@@ -29,7 +29,7 @@ type Result struct {
 	Status  Status
 	Version string
 	MinVer  string
-	Note    string // freeform extra info (e.g. yq flavor warning)
+	Note    string // freeform extra info
 }
 
 // Check is a single tool probe.
@@ -39,10 +39,10 @@ type Check struct {
 	ExtractFn func() (string, error) // returns the detected version
 }
 
-// requiredChecks are the deps that must be present. The Go rewrite has no
-// hard external requirements — composer/npm are only needed for sites of
-// that type, and config/JSON/TOML/cache I/O are all stdlib + pure-Go libs.
-// We still surface a slot here so future features can register hard deps.
+// requiredChecks are the deps that must be present. webaudt has no hard
+// external requirements — composer/npm are only needed for sites of that
+// type, and config/JSON/TOML/cache I/O are all stdlib + pure-Go libs. The
+// slot remains so future features can register hard deps.
 var requiredChecks = []Check{}
 
 // optionalChecks are only needed when a site of that type is registered.
@@ -53,9 +53,8 @@ var optionalChecks = []Check{
 
 // extractFromCmd builds an ExtractFn that runs a command and pulls a version
 // substring out of its combined stdout/stderr via regex.
-func extractFromCmd(bin string, args []string, pat string, prefix func(string, string) string) func() (string, error) {
+func extractFromCmd(bin string, args []string, pat string, _ func(string, string) string) func() (string, error) {
 	re := regexp.MustCompile(pat)
-	_ = prefix // unused, kept for symmetry with bash extractor signatures
 	return func() (string, error) {
 		if _, err := exec.LookPath(bin); err != nil {
 			return "", err
@@ -183,9 +182,9 @@ func installHints() string {
 	hints := []string{"", "Install hints:"}
 	switch runtime.GOOS {
 	case "darwin":
-		hints = append(hints, "  brew install jq git", "  optional: brew install composer node")
+		hints = append(hints, "  brew install composer node  # only the ones you need")
 	case "linux":
-		hints = append(hints, "  Debian/Ubuntu: sudo apt install jq git", "  Arch:          sudo pacman -S jq git")
+		hints = append(hints, "  Debian/Ubuntu: sudo apt install composer npm  # only the ones you need")
 	}
 	return strings.Join(hints, "\n")
 }

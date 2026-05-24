@@ -31,7 +31,10 @@ webaudt                               # open the TUI
 webaudt refresh --all                 # re-run every audit
 webaudt status --json                 # scriptable output
 webaudt rm mysite                     # remove a site
+webaudt doctor                        # verify composer/npm installs
 ```
+
+Run `webaudt <cmd> --help` for per-command flags.
 
 ## Configuration
 
@@ -92,7 +95,7 @@ webaudt normalizes both composer and npm output into six severity buckets, order
 
 ## Portability
 
-Single Go binary. Tested on macOS (Apple Silicon). Linux is supported but not yet smoke-tested.
+Single Go binary. Tested on macOS (Apple Silicon); Linux supported.
 
 ## License
 
