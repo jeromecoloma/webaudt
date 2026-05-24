@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/wordwrap"
@@ -48,10 +49,12 @@ type model struct {
 	cursor         int
 	focus          int
 	width, height  int
-	previewScroll  int
 	refreshing     map[string]bool
 	statusMsg      string
-	previewContent string // re-built whenever site/size changes
+	previewContent      string // raw, unwrapped — viewport handles the wrap+scroll
+	preview             viewport.Model
+	previewReady        bool
+	previewWrappedTotal int // total lines after wrap, for scrollbar math
 }
 
 type siteRow struct {
@@ -102,7 +105,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.rebuildPreview()
+		m.resizePreview()
 		return m, nil
 
 	case refreshDoneMsg:
@@ -141,44 +144,26 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "j", "down":
 				if m.cursor < len(m.sites)-1 {
 					m.cursor++
-					m.previewScroll = 0
 					m.rebuildPreview()
 				}
 			case "k", "up":
 				if m.cursor > 0 {
 					m.cursor--
-					m.previewScroll = 0
 					m.rebuildPreview()
 				}
 			case "g", "home":
 				m.cursor = 0
-				m.previewScroll = 0
 				m.rebuildPreview()
 			case "G", "end":
 				m.cursor = max(0, len(m.sites)-1)
-				m.previewScroll = 0
 				m.rebuildPreview()
 			}
 			return m, nil
 		}
-		// Preview pane focused: scroll content.
-		switch msg.String() {
-		case "j", "down":
-			m.previewScroll++
-		case "k", "up":
-			if m.previewScroll > 0 {
-				m.previewScroll--
-			}
-		case "ctrl+d", "pgdown":
-			m.previewScroll += m.contentHeight() / 2
-		case "ctrl+u", "pgup":
-			m.previewScroll = max(0, m.previewScroll-m.contentHeight()/2)
-		case "g", "home":
-			m.previewScroll = 0
-		case "G", "end":
-			m.previewScroll = max(0, m.previewLineCount()-m.contentHeight())
-		}
-		return m, nil
+		// Preview pane focused: forward to viewport.
+		var cmd tea.Cmd
+		m.preview, cmd = m.preview.Update(msg)
+		return m, cmd
 	}
 	return m, nil
 }
@@ -190,7 +175,7 @@ func (m *model) View() string {
 	footer := m.renderFooter()
 
 	sidebar := m.renderPane(paneSidebar, m.renderSidebarBody(), sidebarWidth)
-	preview := m.renderPane(panePreview, m.renderPreviewBody(), m.previewWidth())
+	preview := m.renderPreviewPane()
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, preview)
 	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
@@ -231,9 +216,6 @@ func (m *model) renderPane(pane int, body string, contentWidth int) string {
 	}
 	var bodyLines []string
 	for _, line := range strings.Split(body, "\n") {
-		// wordwrap first (breaks on spaces), then wrap (hard-breaks long
-		// unbreakable tokens like CVE version ranges so lipgloss.Width()
-		// doesn't re-wrap them and overflow the pane's fixed Height).
 		wrapped := wrap.String(wordwrap.String(line, wrapWidth), wrapWidth)
 		parts := strings.Split(wrapped, "\n")
 		bodyLines = append(bodyLines, parts[0])
@@ -250,9 +232,6 @@ func (m *model) renderPane(pane int, body string, contentWidth int) string {
 	}
 	body = strings.Join(bodyLines, "\n")
 
-	// MaxHeight/MaxWidth clip the final rendered box (including borders) so a
-	// stray long line or ambiguous-width unicode rune can't push the bottom
-	// border off-screen. Height/Width set the minimum; MaxHeight/MaxWidth cap.
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
@@ -263,6 +242,81 @@ func (m *model) renderPane(pane int, body string, contentWidth int) string {
 		AlignVertical(lipgloss.Top).
 		Padding(0, 1).
 		Render(body)
+}
+
+// renderPreviewPane renders the preview viewport inside a bordered box,
+// alongside a scrollbar column on the right when content overflows.
+func (m *model) renderPreviewPane() string {
+	active := m.focus == panePreview
+	borderColor := lipgloss.Color("244")
+	if active {
+		borderColor = lipgloss.Color("51")
+	}
+
+	contentWidth := m.previewWidth()
+	maxLines := m.contentHeight()
+
+	lines := strings.Split(m.preview.View(), "\n")
+	var bar []string
+	if m.previewWrappedTotal > m.preview.Height {
+		bar = scrollbarColumn(m.preview.YOffset, m.previewWrappedTotal, m.preview.Height, active)
+	}
+	for i := range lines {
+		w := lipgloss.Width(lines[i])
+		if w < m.preview.Width {
+			lines[i] += strings.Repeat(" ", m.preview.Width-w)
+		}
+		if i < len(bar) {
+			lines[i] += bar[i]
+		}
+	}
+	body := strings.Join(lines, "\n")
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Width(contentWidth).
+		Height(maxLines).
+		MaxWidth(contentWidth + 4).
+		MaxHeight(maxLines + 2).
+		AlignVertical(lipgloss.Top).
+		Padding(0, 1).
+		Render(body)
+}
+
+// scrollbarColumn returns one " │"/" ┃" string per visible row. Thumb size
+// and position track the viewport's window over the full wrapped content.
+func scrollbarColumn(offset, total, visible int, active bool) []string {
+	if visible <= 0 || total <= visible {
+		return nil
+	}
+	thumbSize := visible * visible / total
+	if thumbSize < 1 {
+		thumbSize = 1
+	}
+	denom := total - visible
+	if denom < 1 {
+		denom = 1
+	}
+	thumbStart := offset * (visible - thumbSize) / denom
+	thumbEnd := thumbStart + thumbSize
+
+	thumbColor := lipgloss.Color("244")
+	if active {
+		thumbColor = lipgloss.Color("51")
+	}
+	thumbStyle := lipgloss.NewStyle().Foreground(thumbColor)
+	trackStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("237"))
+
+	out := make([]string, visible)
+	for i := 0; i < visible; i++ {
+		if i >= thumbStart && i < thumbEnd {
+			out[i] = " " + thumbStyle.Render("┃")
+		} else {
+			out[i] = " " + trackStyle.Render("│")
+		}
+	}
+	return out
 }
 
 // ---- pane bodies ----
@@ -294,23 +348,44 @@ func (m *model) renderSidebarBody() string {
 	return strings.Join(lines, "\n")
 }
 
-func (m *model) renderPreviewBody() string {
-	if m.previewContent == "" {
-		m.rebuildPreview()
+// resizePreview (re)creates or resizes the viewport to fit the current pane
+// dimensions, then re-applies the wrapped content. The pane's content area is
+// previewWidth-2 (lipgloss Padding(0,1) eats 2 cols); subtract 2 more for the
+// scrollbar column.
+func (m *model) resizePreview() {
+	w := m.previewWidth() - 4
+	if w < 8 {
+		w = 8
 	}
-	// Apply scroll offset.
-	lines := strings.Split(m.previewContent, "\n")
-	if m.previewScroll >= len(lines) {
-		m.previewScroll = max(0, len(lines)-1)
+	h := m.contentHeight()
+	if !m.previewReady {
+		m.preview = viewport.New(w, h)
+		m.previewReady = true
+	} else {
+		m.preview.Width = w
+		m.preview.Height = h
 	}
-	if m.previewScroll > 0 {
-		lines = lines[m.previewScroll:]
-	}
-	return strings.Join(lines, "\n")
+	m.setPreviewContent()
 }
 
-func (m *model) previewLineCount() int {
-	return len(strings.Split(m.previewContent, "\n"))
+// setPreviewContent wraps m.previewContent for the current viewport width,
+// updates the viewport, and records the wrapped line count for the scrollbar.
+func (m *model) setPreviewContent() {
+	if !m.previewReady {
+		return
+	}
+	wrapWidth := m.preview.Width
+	if wrapWidth < 8 {
+		wrapWidth = 8
+	}
+	wrapped := wrap.String(wordwrap.String(m.previewContent, wrapWidth), wrapWidth)
+	wrapped = strings.TrimRight(wrapped, "\n")
+	m.preview.SetContent(wrapped)
+	if wrapped == "" {
+		m.previewWrappedTotal = 0
+	} else {
+		m.previewWrappedTotal = strings.Count(wrapped, "\n") + 1
+	}
 }
 
 // rebuildPreview regenerates the right-pane body for the currently-selected site.
@@ -372,6 +447,10 @@ func (m *model) rebuildPreview() {
 		}
 	}
 	m.previewContent = b.String()
+	if m.previewReady {
+		m.preview.GotoTop()
+		m.setPreviewContent()
+	}
 }
 
 func (m *model) renderFooter() string {
