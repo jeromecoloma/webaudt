@@ -38,7 +38,13 @@ common_ensure_dirs() {
 
 common_hash() {
     local path="$1"
-    printf '%s' "$path" | shasum -a 1 | cut -c1-8
+    if command -v sha1sum >/dev/null 2>&1; then
+        printf '%s' "$path" | sha1sum | cut -c1-8
+    elif command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$path" | shasum -a 1 | cut -c1-8
+    else
+        common_die "no sha1 tool found (need sha1sum or shasum)"
+    fi
 }
 
 common_now() { date +%s; }
