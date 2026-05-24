@@ -663,6 +663,8 @@ func (m *model) rebuildPreview() {
 	}
 	row := m.sites[m.cursor]
 	var b strings.Builder
+	b.WriteString(ui.Legend() + "\n")
+	b.WriteString(ui.Dim(strings.Repeat("─", 40)) + "\n")
 	b.WriteString(ui.Name(row.site.Name))
 	b.WriteString("\n")
 	b.WriteString(ui.Dim("path:  ") + row.site.Path + "\n")
@@ -676,6 +678,10 @@ func (m *model) rebuildPreview() {
 
 	b.WriteString(ui.Dim("checked: ") + ui.AbsTime(row.entry.CheckedAt) + " " + ui.Dim("("+ui.RelativeTime(row.entry.CheckedAt)+")") + "\n")
 
+	// Site-wide counts header.
+	total := mergeCounts(row.entry.Composer.Counts, row.entry.NPM.Counts)
+	b.WriteString("\n" + ui.CountsBadges(total) + "\n")
+
 	for _, p := range []struct {
 		label string
 		eco   cache.Ecosystem
@@ -686,7 +692,7 @@ func (m *model) rebuildPreview() {
 		if p.eco.Status == types.StatusNotApplicable {
 			continue
 		}
-		b.WriteString("\n" + ui.Bold(p.label) + "\n")
+		b.WriteString("\n" + ui.Bold(p.label) + "  " + ui.CountsSummaryLong(p.eco.Counts) + "\n")
 		if p.eco.AuditPath != "" && p.eco.AuditPath != row.site.Path {
 			b.WriteString("  " + ui.Dim("auditing: ") + p.eco.AuditPath + "\n")
 		}
@@ -694,23 +700,36 @@ func (m *model) rebuildPreview() {
 			b.WriteString("  " + ui.Failure("ERROR: ") + p.eco.Error + "\n")
 			continue
 		}
-		b.WriteString("  " + ui.CountsSummaryLong(p.eco.Counts) + "\n")
-		n := len(p.eco.Advisories)
-		if n > 10 {
-			n = 10
+		if len(p.eco.Advisories) == 0 {
+			continue
 		}
-		for i := 0; i < n; i++ {
-			a := p.eco.Advisories[i]
-			b.WriteString(fmt.Sprintf("   • %s (%s)\n     %s\n", a.ID, ui.SeverityBadge(a.Severity), a.Package))
-			if a.Affected != "" {
-				b.WriteString("     " + ui.Dim(truncate(a.Affected, m.previewWidth()-8)) + "\n")
+		// Group by package, preserving first-seen order.
+		groups := groupAdvisoriesByPackage(p.eco.Advisories)
+		const perPkgLimit = 6
+		for _, g := range groups {
+			b.WriteString("\n" + ui.Bold(g.pkg) + "\n")
+			n := len(g.items)
+			if n > perPkgLimit {
+				n = perPkgLimit
 			}
-			if a.Title != "" {
-				b.WriteString("     " + ui.Dim(a.Title) + "\n")
+			for i := 0; i < n; i++ {
+				a := g.items[i]
+				badge := "[" + ui.SeverityBadge(a.Severity) + "]"
+				id := a.ID
+				if id == "" {
+					id = "(no id)"
+				}
+				b.WriteString(fmt.Sprintf("  %s %s\n", id, badge))
+				if a.Title != "" {
+					b.WriteString("    " + ui.Dim(stripCVEPrefix(a.Title, a.ID)) + "\n")
+				}
+				if a.Affected != "" {
+					b.WriteString("    " + ui.Dim("affects: "+compactVersionRange(a.Affected)) + "\n")
+				}
 			}
-		}
-		if len(p.eco.Advisories) > 10 {
-			b.WriteString(fmt.Sprintf("   … and %d more\n", len(p.eco.Advisories)-10))
+			if len(g.items) > perPkgLimit {
+				b.WriteString("  " + ui.Dim(fmt.Sprintf("… and %d more in this package", len(g.items)-perPkgLimit)) + "\n")
+			}
 		}
 	}
 	m.previewContent = b.String()
@@ -718,6 +737,86 @@ func (m *model) rebuildPreview() {
 		m.preview.GotoTop()
 		m.setPreviewContent()
 	}
+}
+
+type advGroup struct {
+	pkg   string
+	items []cache.Advisory
+}
+
+// stripCVEPrefix removes a leading "CVE-...: " prefix from a title if it
+// just repeats the advisory ID we already printed.
+func stripCVEPrefix(title, id string) string {
+	if id == "" {
+		return title
+	}
+	prefix := id + ": "
+	if strings.HasPrefix(title, prefix) {
+		return strings.TrimPrefix(title, prefix)
+	}
+	return title
+}
+
+func groupAdvisoriesByPackage(advs []cache.Advisory) []advGroup {
+	idx := map[string]int{}
+	var out []advGroup
+	for _, a := range advs {
+		if i, ok := idx[a.Package]; ok {
+			out[i].items = append(out[i].items, a)
+			continue
+		}
+		idx[a.Package] = len(out)
+		out = append(out, advGroup{pkg: a.Package, items: []cache.Advisory{a}})
+	}
+	return out
+}
+
+// compactVersionRange collapses composer/npm-style affected-version blobs
+// (e.g. ">=6.1.0,<6.2.0|>=6.2.0,<6.3.0|...") into a short summary like
+// "6.1.0 → 8.0.12 (8 ranges)". Falls back to the raw string if no version
+// tokens are detected.
+func compactVersionRange(s string) string {
+	versions := versionTokens(s)
+	if len(versions) == 0 {
+		return s
+	}
+	first := versions[0]
+	last := versions[len(versions)-1]
+	// count comma- or pipe-separated ranges as a proxy
+	ranges := strings.Count(s, ",") + strings.Count(s, "|") + 1
+	if first == last {
+		return first
+	}
+	return fmt.Sprintf("%s → %s (%d range%s)", first, last, ranges, plural(ranges))
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// versionTokens extracts dotted-number tokens (e.g. 6.1.0, 8.0.12) in order.
+func versionTokens(s string) []string {
+	var out []string
+	var cur strings.Builder
+	flush := func() {
+		v := cur.String()
+		cur.Reset()
+		if strings.Count(v, ".") >= 1 {
+			out = append(out, v)
+		}
+	}
+	for _, r := range s {
+		if (r >= '0' && r <= '9') || r == '.' {
+			cur.WriteRune(r)
+		} else {
+			flush()
+		}
+	}
+	flush()
+	return out
 }
 
 func (m *model) renderFooter() string {

@@ -176,6 +176,61 @@ func Banner(version string) string {
 		Render(body)
 }
 
+// Legend returns a one-line severity-icon legend for headers.
+// Includes only buckets that appear in advisory output (severity buckets +
+// clean/never/error markers used in the sidebar).
+func Legend() string {
+	item := func(sev, label string) string {
+		return StatusIcon(sev) + " " + lipgloss.NewStyle().Foreground(SeverityColor(sev)).Render(label)
+	}
+	never := StatusIcon(types.SevNever) + " " + lipgloss.NewStyle().Foreground(colorNever).Render("never")
+	err := StatusIcon(types.SevError) + " " + lipgloss.NewStyle().Foreground(colorError).Render("error")
+	parts := []string{
+		item(types.SevCritical, "critical"),
+		item(types.SevHigh, "high"),
+		item(types.SevUnknown, "unrated"),
+		item(types.SevModerate, "moderate"),
+		item(types.SevLow, "low"),
+		item(types.SevClean, "clean"),
+		never,
+		err,
+	}
+	sep := Dim(" · ")
+	return strings.Join(parts, sep)
+}
+
+// CountsBadges renders prominent colored badges per non-zero bucket, e.g.
+// "[ 1 CRITICAL ] [ 11 UNRATED ]". Suitable for a header row.
+func CountsBadges(c cache.Counts) string {
+	if c.Total() == 0 {
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color("0")).
+			Background(colorClean).
+			Bold(true).
+			Padding(0, 1).
+			Render("CLEAN")
+	}
+	var parts []string
+	add := func(n int, label, sev string) {
+		if n == 0 {
+			return
+		}
+		parts = append(parts, lipgloss.NewStyle().
+			Foreground(lipgloss.Color("0")).
+			Background(SeverityColor(sev)).
+			Bold(true).
+			Padding(0, 1).
+			Render(fmt.Sprintf("%d %s", n, strings.ToUpper(label))))
+	}
+	add(c.Critical, "critical", types.SevCritical)
+	add(c.High, "high", types.SevHigh)
+	add(c.Unknown, "unrated", types.SevUnknown)
+	add(c.Moderate, "moderate", types.SevModerate)
+	add(c.Low, "low", types.SevLow)
+	add(c.Info, "info", types.SevInfo)
+	return strings.Join(parts, " ")
+}
+
 // CountsSummaryShort renders compact counts like "1C 2H 3M" (TUI sidebar).
 func CountsSummaryShort(c cache.Counts) string {
 	if c.Total() == 0 {
