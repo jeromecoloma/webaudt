@@ -66,12 +66,24 @@ common_abs_time() {
 }
 
 # Color handling. Respect NO_COLOR and settings.color (set via WEBAUDT_COLOR env).
+# IMPORTANT: tty detection is done ONCE at source-time. Doing it inside
+# common_use_color would fail for callers using $(common_color ...) since
+# command substitution captures stdout into a pipe.
+if [[ -n "${NO_COLOR:-}" ]]; then
+    __WEBAUDT_TTY=0
+elif [[ -t 1 ]]; then
+    __WEBAUDT_TTY=1
+else
+    __WEBAUDT_TTY=0
+fi
+export __WEBAUDT_TTY
+
 common_use_color() {
     [[ -n "${NO_COLOR:-}" ]] && return 1
     case "${WEBAUDT_COLOR:-auto}" in
         never) return 1 ;;
         always) return 0 ;;
-        auto|*) [[ -t 1 ]] ;;
+        auto|*) [[ "$__WEBAUDT_TTY" == "1" ]] ;;
     esac
 }
 
@@ -130,6 +142,7 @@ common_status_icon() {
     case "$status" in
         critical) glyph='●'; color=$(common_severity_color critical) ;;
         high)     glyph='●'; color=$(common_severity_color high) ;;
+        unknown)  glyph='◆'; color=$(common_severity_color unknown) ;;
         moderate) glyph='●'; color=$(common_severity_color moderate) ;;
         low|info) glyph='●'; color=$(common_severity_color low) ;;
         clean)    glyph='●'; color=$(common_severity_color clean) ;;
@@ -146,6 +159,7 @@ common_severity_color() {
     case "$1" in
         critical) printf '31' ;;       # red
         high)     printf '38;5;208' ;; # orange
+        unknown)  printf '38;5;213' ;; # pink/magenta — unrated, needs review
         moderate) printf '33' ;;       # yellow
         low|info) printf '34' ;;       # blue
         clean)    printf '32' ;;       # green

@@ -10,8 +10,10 @@ AUDIT_ADVISORY_CAP=50
 audit_parse_composer() {
     jq --arg audit_path "${AUDIT_PATH:-}" --argjson cap "$AUDIT_ADVISORY_CAP" '
         def norm_sev(s):
-            (s // "info" | ascii_downcase) as $x
-            | if $x == "medium" then "moderate" else $x end;
+            (s // "unknown" | tostring | ascii_downcase) as $x
+            | if $x == "medium" then "moderate"
+              elif ($x == "" or $x == "null") then "unknown"
+              else $x end;
 
         (.advisories // {}) as $adv
         | [ $adv | to_entries[] | .key as $pkg | .value[] | {
@@ -28,6 +30,7 @@ audit_parse_composer() {
             counts: {
                 critical: ($by.critical // 0),
                 high:     ($by.high // 0),
+                unknown:  ($by.unknown // 0),
                 moderate: ($by.moderate // 0),
                 low:      ($by.low // 0),
                 info:     ($by.info // 0)
@@ -41,8 +44,10 @@ audit_parse_composer() {
 audit_parse_npm() {
     jq --arg audit_path "${AUDIT_PATH:-}" --argjson cap "$AUDIT_ADVISORY_CAP" '
         def norm_sev(s):
-            (s // "info" | ascii_downcase) as $x
-            | if $x == "medium" then "moderate" else $x end;
+            (s // "unknown" | tostring | ascii_downcase) as $x
+            | if $x == "medium" then "moderate"
+              elif ($x == "" or $x == "null") then "unknown"
+              else $x end;
 
         (.metadata.vulnerabilities // {}) as $m
         | (.vulnerabilities // {}) as $v
@@ -53,12 +58,14 @@ audit_parse_npm() {
                 title:    ((.via // []) | map(if type == "object" then (.title // .name // "") else . end) | map(tostring) | join("; ")),
                 affected: (.range // "")
           } ] as $list
+        | ($list | group_by(.severity) | map({(.[0].severity): length}) | add // {}) as $byList
         | {
             status: "ok",
             audit_path: $audit_path,
             counts: {
                 critical: ($m.critical // 0),
                 high:     ($m.high // 0),
+                unknown:  ($byList.unknown // 0),
                 moderate: ($m.moderate // 0),
                 low:      ($m.low // 0),
                 info:     ($m.info // 0)
@@ -202,11 +209,36 @@ audit_run_site() {
 
 # ---- Subcommand drivers ----
 
+# Spell-out severity counts: "1 critical · 2 high" / "11 info" / "clean".
+audit_counts_summary_long() {
+    local counts="$1"
+    local crit high unk mod low info
+    crit=$(printf '%s' "$counts" | jq -r '.critical // 0')
+    high=$(printf '%s' "$counts" | jq -r '.high // 0')
+    unk=$(printf '%s'  "$counts" | jq -r '.unknown // 0')
+    mod=$(printf '%s'  "$counts" | jq -r '.moderate // 0')
+    low=$(printf '%s'  "$counts" | jq -r '.low // 0')
+    info=$(printf '%s' "$counts" | jq -r '.info // 0')
+    if (( crit + high + unk + mod + low + info == 0 )); then
+        common_color "$(common_severity_color clean)" "clean"
+        return
+    fi
+    local parts=()
+    (( crit > 0 )) && parts+=("$(common_color "$(common_severity_color critical)" "$crit critical")")
+    (( high > 0 )) && parts+=("$(common_color "$(common_severity_color high)"     "$high high")")
+    (( unk  > 0 )) && parts+=("$(common_color "$(common_severity_color unknown)"  "$unk unrated")")
+    (( mod  > 0 )) && parts+=("$(common_color "$(common_severity_color moderate)" "$mod moderate")")
+    (( low  > 0 )) && parts+=("$(common_color "$(common_severity_color low)"      "$low low")")
+    (( info > 0 )) && parts+=("$info info")
+    local IFS=' · '
+    printf '%s' "${parts[*]}"
+}
+
 # Compute the worst severity across an entire cache JSON (both ecosystems).
 audit_cache_worst() {
     local cache_json="$1"
     local c n
-    for sev in critical high moderate low info; do
+    for sev in critical high unknown moderate low info; do
         c=$(printf '%s' "$cache_json" | jq -r ".composer.counts.$sev // 0")
         n=$(printf '%s' "$cache_json" | jq -r ".npm.counts.$sev // 0")
         if (( c + n > 0 )); then printf '%s' "$sev"; return; fi
@@ -223,7 +255,7 @@ audit_severity_exit_code() {
     case "$1" in
         critical) return 3 ;;
         high)     return 2 ;;
-        moderate|low|info) return 1 ;;
+        unknown|moderate|low|info) return 1 ;;
         error)    return 10 ;;
         *)        return 0 ;;
     esac
@@ -283,7 +315,7 @@ audit_refresh() {
         name=$(printf '%s' "$s" | jq -r '.name')
         while [ "$(jobs -rp | wc -l)" -ge "$parallel" ]; do wait -n; done
         ( audit_run_site "$s" ) &
-        printf '  %s %s\n' "$(common_color 33 '⟳')" "$name"
+        printf '  %s %s\n' "$(common_color 33 '↻')" "$name"
     done
     wait
     printf '  %s done\n\n' "$(common_color 32 '✓')"
@@ -298,7 +330,8 @@ audit_refresh() {
         case "$w" in
             critical) worst="critical" ;;
             high)     [[ "$worst" != "critical" ]] && worst="high" ;;
-            moderate) [[ "$worst" != "critical" && "$worst" != "high" ]] && worst="moderate" ;;
+            unknown)  [[ "$worst" != "critical" && "$worst" != "high" ]] && worst="unknown" ;;
+            moderate) [[ "$worst" != "critical" && "$worst" != "high" && "$worst" != "unknown" ]] && worst="moderate" ;;
             low|info) [[ "$worst" == "clean" ]] && worst="$w" ;;
             error)    [[ "$worst" == "clean" ]] && worst="error" ;;
         esac
@@ -327,36 +360,105 @@ audit_status() {
         shift
     done
 
-    local worst="clean" sites_json="[]"
+    local worst="clean" sites_json="[]" matched=0
+    local rendered=""
     local s
     while IFS= read -r s; do
         [[ -z "$s" ]] && continue
         local sn p c w
         sn=$(printf '%s' "$s" | jq -r '.name')
         [[ -n "$name" && "$sn" != "$name" ]] && continue
+        matched=$((matched+1))
         p=$(printf '%s' "$s" | jq -r '.path')
         c=$(cache_read "$p" 2>/dev/null || printf '{}')
         w=$(audit_cache_worst "$c")
         case "$w" in
             critical) worst="critical" ;;
             high)     [[ "$worst" != "critical" ]] && worst="high" ;;
-            moderate) [[ "$worst" != "critical" && "$worst" != "high" ]] && worst="moderate" ;;
+            unknown)  [[ "$worst" != "critical" && "$worst" != "high" ]] && worst="unknown" ;;
+            moderate) [[ "$worst" != "critical" && "$worst" != "high" && "$worst" != "unknown" ]] && worst="moderate" ;;
             low|info) [[ "$worst" == "clean" ]] && worst="$w" ;;
             error)    [[ "$worst" == "clean" ]] && worst="error" ;;
         esac
+
         if (( emit_json )); then
             sites_json=$(printf '%s' "$sites_json" | jq --argjson c "$c" '. + [$c]')
-        else
-            local ts="never"
-            local checked
-            checked=$(printf '%s' "$c" | jq -r '.checked_at // 0')
-            [[ "$checked" != "0" ]] && ts=$(common_relative_time "$checked")
-            printf '%-20s  %-10s  %s\n' "$sn" "$w" "$ts"
+            continue
         fi
+
+        rendered+=$(audit_status_card "$s" "$c" "$w")
+        rendered+=$'\n'
     done < <(config_sites)
 
     if (( emit_json )); then
         printf '%s\n' "$sites_json" | jq .
+        audit_severity_exit_code "$worst"
+        return
     fi
+
+    if [[ -n "$name" && "$matched" -eq 0 ]]; then
+        common_die "no such site: $name"
+    fi
+
+    common_heading "audit status ($matched $([[ "$matched" -eq 1 ]] && printf 'site' || printf 'sites'))"
+    printf '\n'
+    if [[ -z "$rendered" ]]; then
+        printf '  (no sites registered)\n\n'
+    else
+        printf '%s' "$rendered"
+    fi
+    printf '  %s %s\n\n' "$(common_color 244 'overall:')" "$(common_color "$(common_severity_color "$worst")" "$worst")"
+
     audit_severity_exit_code "$worst"
+}
+
+# Render one site status card.
+audit_status_card() {
+    local site_json="$1" cache_json="$2" worst="$3"
+    local name path checked icon type
+    name=$(printf '%s' "$site_json" | jq -r '.name')
+    path=$(printf '%s' "$site_json" | jq -r '.path')
+    type=$(printf '%s' "$site_json" | jq -r '.type')
+    checked=$(printf '%s' "$cache_json" | jq -r '.checked_at // 0')
+
+    icon=$(common_status_icon "$worst")
+
+    local when status_line
+    if [[ "$checked" == "0" ]]; then
+        status_line=$(common_color 244 "never checked")
+    else
+        when=$(common_relative_time "$checked")
+        status_line=$(printf '%s · %s' \
+            "$(common_color "$(common_severity_color "$worst")" "$worst")" \
+            "$(common_color 244 "$when")")
+    fi
+
+    printf '  %s  %s  %s\n' \
+        "$icon" \
+        "$(common_color '1;36' "$name")" \
+        "$status_line"
+
+    # Per-ecosystem breakdown when we have data.
+    if [[ "$checked" != "0" ]]; then
+        local eco block status counts breakdown=""
+        for eco in composer npm; do
+            block=$(printf '%s' "$cache_json" | jq -c ".$eco // {}")
+            status=$(printf '%s' "$block" | jq -r '.status // "not_applicable"')
+            case "$status" in
+                not_applicable) continue ;;
+                error)
+                    breakdown+="$(common_color 244 "$eco:")$(common_color "$(common_severity_color high)" 'error')   "
+                    ;;
+                ok)
+                    counts=$(printf '%s' "$block" | jq -c '.counts // {}')
+                    local s
+                    s=$(audit_counts_summary_long "$counts")
+                    breakdown+="$(common_color 244 "$eco:") $s   "
+                    ;;
+            esac
+        done
+        [[ -n "$breakdown" ]] && printf '      %s\n' "$breakdown"
+    fi
+
+    printf '      %s\n\n' "$(common_color 244 "$path")"
 }

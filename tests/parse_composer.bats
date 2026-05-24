@@ -32,6 +32,22 @@ setup() {
     grep -qx moderate <<< "$sevs"
 }
 
+@test "composer: null/missing severity bucketed as unknown" {
+    fixture=$(jq -n '{
+        advisories: {
+            "vendor/x": [
+                {advisoryId: "A1", cve: "CVE-1", title: "t", affectedVersions: "*", severity: null},
+                {advisoryId: "A2", cve: "CVE-2", title: "t", affectedVersions: "*"}
+            ]
+        }
+    }')
+    export AUDIT_PATH=/site
+    out=$(printf '%s' "$fixture" | audit_parse_composer)
+    [ "$(printf '%s' "$out" | jq -r '.counts.unknown')" = "2" ]
+    [ "$(printf '%s' "$out" | jq -r '.counts.info')" = "0" ]
+    [ "$(printf '%s' "$out" | jq -r '[.advisories[].severity] | unique | join(",")')" = "unknown" ]
+}
+
 @test "composer: advisories capped at AUDIT_ADVISORY_CAP" {
     # Build a synthetic fixture with > cap advisories.
     big=$(jq -n --argjson n 75 '

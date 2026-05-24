@@ -83,19 +83,21 @@ preview_render() {
 # Render a one-line counts summary like "1C 2H 3M · 0 low" or "clean".
 preview_counts_summary() {
     local counts="$1"
-    local crit high mod low info
+    local crit high unk mod low info
     crit=$(printf '%s' "$counts" | jq -r '.critical // 0')
     high=$(printf '%s' "$counts" | jq -r '.high // 0')
+    unk=$(printf '%s'  "$counts" | jq -r '.unknown // 0')
     mod=$(printf '%s'  "$counts" | jq -r '.moderate // 0')
     low=$(printf '%s'  "$counts" | jq -r '.low // 0')
     info=$(printf '%s' "$counts" | jq -r '.info // 0')
-    if (( crit + high + mod + low + info == 0 )); then
+    if (( crit + high + unk + mod + low + info == 0 )); then
         printf 'clean'
         return
     fi
     local parts=()
     (( crit > 0 )) && parts+=("$(common_color "$(common_severity_color critical)" "${crit}C")")
     (( high > 0 )) && parts+=("$(common_color "$(common_severity_color high)"     "${high}H")")
+    (( unk  > 0 )) && parts+=("$(common_color "$(common_severity_color unknown)"  "${unk}U")")
     (( mod  > 0 )) && parts+=("$(common_color "$(common_severity_color moderate)" "${mod}M")")
     (( low  > 0 )) && parts+=("$(common_color "$(common_severity_color low)"      "${low}L")")
     (( info > 0 )) && parts+=("${info}I")
