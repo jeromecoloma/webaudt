@@ -61,6 +61,7 @@ type model struct {
 	preview             viewport.Model
 	previewReady        bool
 	previewWrappedTotal int // total lines after wrap, for scrollbar math
+	sidebarOffset       int // top line of the sidebar viewport, for scroll
 
 	// filter modal
 	filterOpen    bool
@@ -264,7 +265,7 @@ func (m *model) View() string {
 	}
 	footer := m.renderFooter()
 
-	sidebar := m.renderPane(paneSidebar, m.renderSidebarBody(), sidebarWidth)
+	sidebar := m.renderSidebarPane()
 	preview := m.renderPreviewPane()
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, preview)
@@ -798,11 +799,14 @@ func scrollbarColumn(offset, total, visible int, active bool) []string {
 
 // ---- pane bodies ----
 
-func (m *model) renderSidebarBody() string {
+// sidebarLines builds the sidebar rows and returns the first line index of the
+// row currently under the cursor (for scroll math).
+func (m *model) sidebarLines() ([]string, int) {
 	if len(m.sites) == 0 {
-		return ui.Dim("(no sites — run `webaudt add /path`)")
+		return []string{ui.Dim("(no sites — run `webaudt add /path`)")}, 0
 	}
 	var lines []string
+	cursorLine := 0
 	for i, row := range m.sites {
 		icon := ui.StatusIcon(row.worst)
 		if m.refreshing[row.site.Name] {
@@ -812,6 +816,7 @@ func (m *model) renderSidebarBody() string {
 		prefix := "  "
 		nameStyled := name
 		if i == m.cursor {
+			cursorLine = len(lines)
 			prefix = lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Bold(true).Render("▸ ")
 			nameStyled = lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Bold(true).Render(name)
 		}
@@ -822,7 +827,97 @@ func (m *model) renderSidebarBody() string {
 			lines = append(lines, "    "+ui.Dim(summary))
 		}
 	}
-	return strings.Join(lines, "\n")
+	return lines, cursorLine
+}
+
+// renderSidebarPane renders the Sites list inside a bordered box, slicing the
+// visible window around the cursor and drawing a scrollbar column on the right
+// when content overflows.
+func (m *model) renderSidebarPane() string {
+	active := m.focus == paneSidebar
+	borderColor := lipgloss.Color("244")
+	if active {
+		borderColor = lipgloss.Color("51")
+	}
+
+	contentWidth := sidebarWidth
+	visible := m.contentHeight()
+	// .Width(contentWidth).Padding(0,1) leaves contentWidth-2 inner cells;
+	// reserve another 2 for the scrollbar column (" │") on the right.
+	listWidth := contentWidth - 4
+	if listWidth < 8 {
+		listWidth = 8
+	}
+
+	all, cursorLine := m.sidebarLines()
+
+	// Wrap each line to listWidth so the scrollbar column doesn't get pushed.
+	var wrapped []string
+	// Track where each source line lands after wrapping so we can map cursorLine.
+	wrappedCursor := 0
+	for i, line := range all {
+		w := wrap.String(wordwrap.String(line, listWidth), listWidth)
+		parts := strings.Split(w, "\n")
+		if i == cursorLine {
+			wrappedCursor = len(wrapped)
+		}
+		wrapped = append(wrapped, parts[0])
+		for _, cont := range parts[1:] {
+			wrapped = append(wrapped, "  "+cont)
+		}
+	}
+
+	total := len(wrapped)
+	// Clamp offset so cursor stays visible.
+	if wrappedCursor < m.sidebarOffset {
+		m.sidebarOffset = wrappedCursor
+	}
+	if wrappedCursor >= m.sidebarOffset+visible {
+		m.sidebarOffset = wrappedCursor - visible + 1
+	}
+	if m.sidebarOffset > total-visible {
+		m.sidebarOffset = total - visible
+	}
+	if m.sidebarOffset < 0 {
+		m.sidebarOffset = 0
+	}
+
+	end := m.sidebarOffset + visible
+	if end > total {
+		end = total
+	}
+	view := wrapped[m.sidebarOffset:end]
+	for len(view) < visible {
+		view = append(view, "")
+	}
+
+	var bar []string
+	if total > visible {
+		bar = scrollbarColumn(m.sidebarOffset, total, visible, active)
+	}
+	for i := range view {
+		w := lipgloss.Width(view[i])
+		if w < listWidth {
+			view[i] += strings.Repeat(" ", listWidth-w)
+		}
+		if i < len(bar) {
+			view[i] += bar[i]
+		}
+	}
+	body := strings.Join(view, "\n")
+
+	rendered := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Width(contentWidth).
+		Height(visible).
+		MaxWidth(contentWidth+4).
+		MaxHeight(visible+2).
+		AlignVertical(lipgloss.Top).
+		Padding(0, 1).
+		Render(body)
+
+	return injectFieldsetTitle(rendered, m.fieldsetTitle(paneSidebar), borderColor)
 }
 
 // resizePreview (re)creates or resizes the viewport to fit the current pane
