@@ -79,6 +79,9 @@ type model struct {
 
 	// remove confirmation modal
 	removeOpen bool
+
+	// help modal
+	helpOpen bool
 }
 
 type siteRow struct {
@@ -111,6 +114,26 @@ func (m *model) loadSites() {
 	}
 	if m.cursor >= len(m.sites) {
 		m.cursor = max(0, len(m.sites)-1)
+	}
+	m.rebuildPreview()
+}
+
+// moveSite shifts the site under the cursor by delta (-1 = up, +1 = down),
+// persists the new order to config.toml, and keeps the cursor on that site.
+func (m *model) moveSite(delta int) {
+	if len(m.sites) < 2 {
+		return
+	}
+	j := m.cursor + delta
+	if j < 0 || j >= len(m.sites) {
+		return
+	}
+	m.sites[m.cursor], m.sites[j] = m.sites[j], m.sites[m.cursor]
+	m.cfg.Sites[m.cursor], m.cfg.Sites[j] = m.cfg.Sites[j], m.cfg.Sites[m.cursor]
+	m.cursor = j
+	if err := m.cfg.Save(); err != nil {
+		m.statusMsg = "save config: " + err.Error()
+		return
 	}
 	m.rebuildPreview()
 }
@@ -160,6 +183,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.removeOpen {
 			return m.updateRemove(msg)
 		}
+		if m.helpOpen {
+			switch msg.String() {
+			case "esc", "q", "?", "enter":
+				m.helpOpen = false
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
@@ -187,7 +217,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focus = (m.focus + 1) % 2
 			return m, nil
 		case "?":
-			m.statusMsg = "Keys: 1/2 pane · j/k move · / filter · a add · d remove · r refresh · R all · q quit"
+			m.helpOpen = true
+			m.statusMsg = ""
 			return m, nil
 		case "r":
 			return m, m.refreshCurrent()
@@ -212,6 +243,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "G", "end":
 				m.cursor = max(0, len(m.sites)-1)
 				m.rebuildPreview()
+			case "K", "shift+up":
+				m.moveSite(-1)
+			case "J", "shift+down":
+				m.moveSite(+1)
 			}
 			return m, nil
 		}
@@ -241,6 +276,9 @@ func (m *model) View() string {
 	}
 	if m.removeOpen {
 		body = overlayCenter(body, m.renderRemoveModal())
+	}
+	if m.helpOpen {
+		body = overlayCenter(body, m.renderHelpModal())
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
 }
@@ -371,6 +409,84 @@ func (m *model) renderFilterModal() string {
 		Padding(0, 1).
 		Width(width).
 		Render(b.String())
+}
+
+// renderHelpModal shows the full keybinding list, grouped — description on
+// the left, key right-aligned. OpenCode-style. Dismiss with ?, esc, q, enter.
+func (m *model) renderHelpModal() string {
+	type row struct{ desc, key string }
+	groups := []struct {
+		title string
+		rows  []row
+	}{
+		{"Navigation", []row{
+			{"Focus sites pane", "1"},
+			{"Focus details pane", "2"},
+			{"Cycle panes", "tab"},
+			{"Move down", "j"},
+			{"Move up", "k"},
+			{"Jump to first", "g"},
+			{"Jump to last", "G"},
+		}},
+		{"Sites", []row{
+			{"Reorder down", "J"},
+			{"Reorder up", "K"},
+			{"Filter", "/"},
+			{"Add", "a"},
+			{"Remove", "d"},
+			{"Refresh selected", "r"},
+			{"Refresh all", "R"},
+		}},
+		{"App", []row{
+			{"Toggle this help", "?"},
+			{"Quit", "q"},
+		}},
+	}
+
+	innerW := 44 // width of the content row (desc ... key)
+	descW, keyW := 0, 0
+	for _, g := range groups {
+		for _, r := range g.rows {
+			if len(r.desc) > descW {
+				descW = len(r.desc)
+			}
+			if len(r.key) > keyW {
+				keyW = len(r.key)
+			}
+		}
+	}
+	if descW+keyW+2 > innerW {
+		innerW = descW + keyW + 4
+	}
+
+	titleStyle := lipgloss.NewStyle().Bold(true)
+	headStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Bold(true)
+	keyStyle := ui.Dim
+	descStyle := lipgloss.NewStyle()
+
+	rowLine := func(left, right string) string {
+		pad := innerW - lipgloss.Width(left) - lipgloss.Width(right)
+		if pad < 1 {
+			pad = 1
+		}
+		return left + strings.Repeat(" ", pad) + right
+	}
+
+	var b strings.Builder
+	b.WriteString(rowLine(titleStyle.Render("Keybindings"), keyStyle("esc")))
+	b.WriteString("\n")
+	for _, g := range groups {
+		b.WriteString("\n" + headStyle.Render(g.title) + "\n")
+		for _, r := range g.rows {
+			b.WriteString(rowLine(descStyle.Render(r.desc), keyStyle(r.key)) + "\n")
+		}
+	}
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("51")).
+		Padding(1, 2).
+		Render(strings.TrimRight(b.String(), "\n"))
 }
 
 // overlayCenter places `over` centered on top of `bg`, replacing the lines
@@ -1000,7 +1116,7 @@ func (m *model) renderFooter() string {
 		}
 		hints = paneTag(1, "sites") + "  " + paneTag(2, "details") +
 			lipgloss.NewStyle().Foreground(lipgloss.Color("244")).
-				Render("   ·  j/k move · / filter · a add · d remove · r refresh · ? help · q quit")
+				Render("   ·  a add · ? help · q quit")
 	}
 	return "  " + hints
 }
