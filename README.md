@@ -1,5 +1,7 @@
 # webaudt
 
+**Status:** active — under regular development.
+
 Terminal UI for monitoring `composer audit` and `npm audit` findings across a registry of local sites.
 
 Written in Go. Pure single-binary install — no external runtime deps beyond `composer`/`npm` themselves (and only when you register a site of that type).
@@ -96,6 +98,23 @@ webaudt normalizes both composer and npm output into six severity buckets, order
 ## Portability
 
 Single Go binary. Tested on macOS (Apple Silicon); Linux supported.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup and the PR process.
+Bug reports and feature requests go through the issue templates in
+`.github/ISSUE_TEMPLATE/`.
+
+By participating you agree to abide by the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Security
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md). Please do not file
+public issues for security reports.
+
+## Governance
+
+See [GOVERNANCE.md](GOVERNANCE.md) and [MAINTAINERS.md](MAINTAINERS.md).
 
 ## License
 

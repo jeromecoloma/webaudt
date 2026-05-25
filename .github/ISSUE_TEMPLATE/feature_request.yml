@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest an enhancement to webaudt
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the use case, not the proposed solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Optional. Sketch of how webaudt could address this.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      description: See CONTRIBUTING.md for in-scope vs out-of-scope items.
+      options:
+        - label: I've read CONTRIBUTING.md and believe this is in scope.
+          required: true
