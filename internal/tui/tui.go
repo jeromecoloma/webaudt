@@ -804,7 +804,9 @@ func (m *model) sidebarLines() ([]string, int) {
 		if m.refreshing[row.site.Name] {
 			icon = ui.StatusIcon(types.SevRunning)
 		}
-		name := truncate(row.site.Name, sidebarWidth-6)
+		// listWidth in renderSidebarPane is sidebarWidth-4; the row prefix
+		// ("  ○ " or "▸ ○ ") consumes 4 cells before the name, so cap at -8.
+		name := truncate(row.site.Name, sidebarWidth-8)
 		prefix := "  "
 		nameStyled := name
 		if i == m.cursor {
