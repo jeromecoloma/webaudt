@@ -246,11 +246,15 @@ func naBlock() cache.Ecosystem {
 
 // RunComposer executes `composer audit` in cpath and returns a normalized Ecosystem.
 // Errors are returned as Ecosystem{Status:error}, not as Go errors.
+// `bin` may include leading args (e.g. "/usr/bin/php7.4 /home/deploy/bin/composer")
+// for multi-PHP setups.
 func RunComposer(ctx context.Context, cpath, bin string) cache.Ecosystem {
-	if _, err := exec.LookPath(bin); err != nil {
+	exe, prefix, err := resolveBin(bin)
+	if err != nil {
 		return errBlock(cpath, fmt.Sprintf("composer binary not found: %s", bin))
 	}
-	cmd := exec.CommandContext(ctx, bin, "audit", "--format=json", "--no-interaction", "--locked")
+	args := append(prefix, "audit", "--format=json", "--no-interaction", "--locked")
+	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = cpath
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -274,10 +278,12 @@ func RunComposer(ctx context.Context, cpath, bin string) cache.Ecosystem {
 
 // RunNpm executes `npm audit` in npath and returns a normalized Ecosystem.
 func RunNpm(ctx context.Context, npath, bin string) cache.Ecosystem {
-	if _, err := exec.LookPath(bin); err != nil {
+	exe, prefix, err := resolveBin(bin)
+	if err != nil {
 		return errBlock(npath, fmt.Sprintf("npm binary not found: %s", bin))
 	}
-	cmd := exec.CommandContext(ctx, bin, "audit", "--json", "--audit-level=info")
+	args := append(prefix, "audit", "--json", "--audit-level=info")
+	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = npath
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -385,6 +391,23 @@ func RunMany(ctx context.Context, settings config.Settings, sites []config.Site)
 	}
 	wg.Wait()
 	return errs
+}
+
+// resolveBin splits a bin string into its executable and any leading args.
+// Accepts plain names ("composer"), absolute paths ("/usr/bin/composer"),
+// and wrapper forms like "/usr/bin/php7.4 /home/deploy/bin/composer" used
+// on multi-PHP boxes. Fields are whitespace-split — paths with spaces
+// aren't supported (uncommon for binaries).
+func resolveBin(bin string) (string, []string, error) {
+	parts := strings.Fields(bin)
+	if len(parts) == 0 {
+		return "", nil, exec.ErrNotFound
+	}
+	exe, err := exec.LookPath(parts[0])
+	if err != nil {
+		return "", nil, err
+	}
+	return exe, parts[1:], nil
 }
 
 func truncate(s string, n int) string {
