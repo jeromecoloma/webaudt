@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "pre-push: go build ./..."
+go build ./...
+
+echo "pre-push: go vet ./..."
+go vet ./...
+
+echo "pre-push: go test ./..."
+go test ./...
+
+echo "pre-push: ok"
