@@ -50,13 +50,13 @@ func Run() error {
 }
 
 type model struct {
-	cfg            *config.File
-	sites          []siteRow
-	cursor         int
-	focus          int
-	width, height  int
-	refreshing     map[string]bool
-	statusMsg      string
+	cfg                 *config.File
+	sites               []siteRow
+	cursor              int
+	focus               int
+	width, height       int
+	refreshing          map[string]bool
+	statusMsg           string
 	previewContent      string // raw, unwrapped — viewport handles the wrap+scroll
 	preview             viewport.Model
 	previewReady        bool
@@ -699,8 +699,8 @@ func (m *model) renderPane(pane int, body string, contentWidth int) string {
 		BorderForeground(borderColor).
 		Width(contentWidth).
 		Height(maxLines).
-		MaxWidth(contentWidth + 4).
-		MaxHeight(maxLines + 2).
+		MaxWidth(contentWidth+4).
+		MaxHeight(maxLines+2).
 		AlignVertical(lipgloss.Top).
 		Padding(0, 1).
 		Render(body)
@@ -752,8 +752,8 @@ func (m *model) renderPreviewPane() string {
 		BorderForeground(borderColor).
 		Width(contentWidth).
 		Height(maxLines).
-		MaxWidth(contentWidth + 4).
-		MaxHeight(maxLines + 2).
+		MaxWidth(contentWidth+4).
+		MaxHeight(maxLines+2).
 		AlignVertical(lipgloss.Top).
 		Padding(0, 1).
 		Render(body)

@@ -236,12 +236,12 @@ func (f *File) Save() error {
 	}
 	enc := toml.NewEncoder(out)
 	if err := enc.Encode(f); err != nil {
-		out.Close()
-		os.Remove(tmp)
+		_ = out.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("encode toml: %w", err)
 	}
 	if err := out.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)

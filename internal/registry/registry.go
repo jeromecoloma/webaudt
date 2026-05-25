@@ -31,16 +31,16 @@ type AddOptions struct {
 // Resolution is the resolved-but-not-yet-persisted view of the site, used by
 // the CLI to render the confirmation block before saving.
 type Resolution struct {
-	Name             string
-	AbsPath          string
-	Type             types.SiteType
-	ComposerPath     string
-	NPMPath          string
-	ComposerBin      string
-	NPMBin           string
-	NVMRC            string // contents of .nvmrc if present
-	DefaultComposer  string
-	DefaultNPM       string
+	Name            string
+	AbsPath         string
+	Type            types.SiteType
+	ComposerPath    string
+	NPMPath         string
+	ComposerBin     string
+	NPMBin          string
+	NVMRC           string // contents of .nvmrc if present
+	DefaultComposer string
+	DefaultNPM      string
 }
 
 // Resolve runs the detection logic for AddOptions and returns a fully-populated
@@ -251,7 +251,7 @@ func readNVMRC(path string) string {
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	if sc.Scan() {
 		return strings.TrimSpace(sc.Text())
