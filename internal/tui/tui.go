@@ -4,6 +4,9 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -17,6 +20,7 @@ import (
 	"github.com/jeromecoloma/webaudt/internal/audit"
 	"github.com/jeromecoloma/webaudt/internal/cache"
 	"github.com/jeromecoloma/webaudt/internal/config"
+	"github.com/jeromecoloma/webaudt/internal/registry"
 	"github.com/jeromecoloma/webaudt/internal/types"
 	"github.com/jeromecoloma/webaudt/internal/ui"
 )
@@ -63,6 +67,18 @@ type model struct {
 	filterInput   textinput.Model
 	filterMatches []int // indices into m.sites
 	filterCursor  int   // index into filterMatches
+
+	// add modal
+	addOpen       bool
+	addStage      int // 0 = path input, 1 = confirm resolved
+	addInput      textinput.Model
+	addError      string
+	addResolution *registry.Resolution
+	addCands      []string // tab-completion candidates (basenames)
+	addCandDir    string   // dir those candidates live in
+
+	// remove confirmation modal
+	removeOpen bool
 }
 
 type siteRow struct {
@@ -127,7 +143,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMsg:
-		if m.filterOpen {
+		if m.filterOpen || m.addOpen || m.removeOpen {
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -138,6 +154,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.filterOpen {
 			return m.updateFilter(msg)
 		}
+		if m.addOpen {
+			return m.updateAdd(msg)
+		}
+		if m.removeOpen {
+			return m.updateRemove(msg)
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
@@ -146,6 +168,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "/":
 			m.openFilter()
 			return m, textinput.Blink
+		case "a":
+			m.openAdd()
+			return m, textinput.Blink
+		case "d", "delete":
+			if len(m.sites) > 0 {
+				m.removeOpen = true
+				m.statusMsg = ""
+			}
+			return m, nil
 		case "1":
 			m.focus = paneSidebar
 			return m, nil
@@ -156,7 +187,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focus = (m.focus + 1) % 2
 			return m, nil
 		case "?":
-			m.statusMsg = "Keys: 1/2 pane · j/k or ↑↓ move · / filter · r refresh · R all · ? help · q quit"
+			m.statusMsg = "Keys: 1/2 pane · j/k move · / filter · a add · d remove · r refresh · R all · q quit"
 			return m, nil
 		case "r":
 			return m, m.refreshCurrent()
@@ -204,6 +235,12 @@ func (m *model) View() string {
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, preview)
 	if m.filterOpen {
 		body = overlayCenter(body, m.renderFilterModal())
+	}
+	if m.addOpen {
+		body = overlayCenter(body, m.renderAddModal())
+	}
+	if m.removeOpen {
+		body = overlayCenter(body, m.renderRemoveModal())
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
 }
@@ -746,7 +783,11 @@ func (m *model) rebuildPreview() {
 	b.WriteString(ui.Name(row.site.Name))
 	b.WriteString("\n")
 	b.WriteString(ui.Dim("path:  ") + row.site.Path + "\n")
-	b.WriteString(ui.Dim("type:  ") + string(row.site.Type) + "\n")
+	typeLabel := string(row.site.Type)
+	if row.site.Type == types.TypeBoth {
+		typeLabel = "composer+npm"
+	}
+	b.WriteString(ui.Dim("type:  ") + typeLabel + "\n")
 
 	if row.entry == nil {
 		b.WriteString("\n" + ui.Warn("NOT YET AUDITED") + "\n")
@@ -959,7 +1000,7 @@ func (m *model) renderFooter() string {
 		}
 		hints = paneTag(1, "sites") + "  " + paneTag(2, "details") +
 			lipgloss.NewStyle().Foreground(lipgloss.Color("244")).
-				Render("   ·  j/k move · / filter · r refresh · R all · ? help · q quit")
+				Render("   ·  j/k move · / filter · a add · d remove · r refresh · ? help · q quit")
 	}
 	return "  " + hints
 }
@@ -1013,6 +1054,406 @@ func (m *model) startRefresh(site config.Site) tea.Cmd {
 		err := audit.RunSite(context.Background(), cfg.Settings, site)
 		return refreshDoneMsg{name: site.Name, err: err}
 	}
+}
+
+// ---- add modal ----
+
+func (m *model) openAdd() {
+	ti := textinput.New()
+	ti.Placeholder = "/path/to/site"
+	ti.Prompt = "› "
+	ti.CharLimit = 512
+	ti.Width = 44
+	ti.Focus()
+	m.addInput = ti
+	m.addOpen = true
+	m.addStage = 0
+	m.addError = ""
+	m.addResolution = nil
+	m.addCands = nil
+	m.addCandDir = ""
+}
+
+func (m *model) closeAdd() {
+	m.addOpen = false
+	m.addInput.Blur()
+	m.addError = ""
+	m.addResolution = nil
+	m.addStage = 0
+	m.addCands = nil
+	m.addCandDir = ""
+}
+
+func (m *model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.closeAdd()
+		return m, nil
+	}
+	// "q" closes the confirm stage too; in the input stage it must remain a
+	// typeable character.
+	if m.addStage == 1 && msg.String() == "q" {
+		m.closeAdd()
+		return m, nil
+	}
+
+	if m.addStage == 0 {
+		if msg.String() == "tab" {
+			m.completeAddPath()
+			return m, nil
+		}
+		if msg.String() == "enter" {
+			path := strings.TrimSpace(m.addInput.Value())
+			if path == "" {
+				m.addError = "path is required"
+				return m, nil
+			}
+			res, err := registry.Resolve(m.cfg, registry.AddOptions{Path: path})
+			if err != nil {
+				m.addError = err.Error()
+				return m, nil
+			}
+			m.addResolution = res
+			m.addError = ""
+			m.addStage = 1
+			return m, nil
+		}
+		prev := m.addInput.Value()
+		var cmd tea.Cmd
+		m.addInput, cmd = m.addInput.Update(msg)
+		if m.addInput.Value() != prev {
+			m.addCands = nil
+			m.addCandDir = ""
+		}
+		return m, cmd
+	}
+
+	// stage 1: confirm
+	switch msg.String() {
+	case "enter", "y", "Y":
+		if err := registry.Apply(m.cfg, m.addResolution); err != nil {
+			m.addError = err.Error()
+			m.addStage = 0
+			return m, nil
+		}
+		name := m.addResolution.Name
+		m.closeAdd()
+		m.loadSites()
+		// Move cursor to the newly added site.
+		for i, row := range m.sites {
+			if row.site.Name == name {
+				m.cursor = i
+				break
+			}
+		}
+		m.rebuildPreview()
+		m.statusMsg = "added " + name
+		return m, nil
+	case "n", "N", "backspace":
+		m.addStage = 0
+		m.addError = ""
+		m.addInput.Focus()
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m *model) renderAddModal() string {
+	width := 60
+	if width > m.width-4 {
+		width = m.width - 4
+	}
+	var b strings.Builder
+	if m.addStage == 0 {
+		b.WriteString(ui.Bold("Add site"))
+		b.WriteString("\n")
+		b.WriteString(ui.Dim("Enter the path to a site directory."))
+		b.WriteString("\n\n")
+		b.WriteString(m.addInput.View())
+		if len(m.addCands) > 0 {
+			b.WriteString("\n\n" + ui.Dim("candidates:") + "\n")
+			b.WriteString(formatCandidates(m.addCands, width-4))
+		}
+		if m.addError != "" {
+			b.WriteString("\n\n" + ui.Failure("error: ") + m.addError)
+		}
+		b.WriteString("\n\n" + ui.Dim("tab complete · enter resolve · esc cancel"))
+	} else {
+		// Wider modal for the confirm stage so long paths don't wrap.
+		width = 84
+		if width > m.width-4 {
+			width = m.width - 4
+		}
+		r := m.addResolution
+		labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+		valStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+		nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Bold(true)
+		typeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
+
+		field := func(label, val string, style lipgloss.Style) string {
+			return labelStyle.Render(fmt.Sprintf("%-13s", label)) + style.Render(val)
+		}
+
+		b.Reset()
+		b.WriteString(ui.Bold("Confirm add"))
+		b.WriteString("\n")
+		b.WriteString(ui.Dim(strings.Repeat("─", width-4)))
+		b.WriteString("\n\n")
+		typeLabel := string(r.Type)
+		if r.Type == types.TypeBoth {
+			typeLabel = "composer+npm"
+		}
+		b.WriteString(field("name", r.Name, nameStyle) + "\n")
+		b.WriteString(field("type", typeLabel, typeStyle) + "\n")
+		b.WriteString(field("path", r.AbsPath, valStyle) + "\n")
+		if r.ComposerPath != "" && r.ComposerPath != r.AbsPath {
+			b.WriteString(field("composer", r.ComposerPath, valStyle) + "\n")
+		}
+		if r.NPMPath != "" && r.NPMPath != r.AbsPath {
+			b.WriteString(field("npm", r.NPMPath, valStyle) + "\n")
+		}
+		if r.ComposerBin != "" && r.ComposerBin != r.DefaultComposer {
+			b.WriteString(field("composer-bin", r.ComposerBin, valStyle) + "\n")
+		}
+		if r.NPMBin != "" && r.NPMBin != r.DefaultNPM {
+			b.WriteString(field("npm-bin", r.NPMBin, valStyle) + "\n")
+		}
+		if r.NVMRC != "" {
+			b.WriteString(field(".nvmrc", r.NVMRC, valStyle) + "\n")
+		}
+		b.WriteString("\n" + ui.Dim(strings.Repeat("─", width-4)) + "\n")
+		b.WriteString(ui.Dim("enter/y confirm · n back · esc/q cancel"))
+	}
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("51")).
+		Padding(0, 1).
+		Width(width).
+		Render(b.String())
+}
+
+// completeAddPath performs shell-like tab completion on the add-modal path
+// input. Expands ~, completes the trailing path segment against directory
+// entries, fills the longest common prefix on first Tab, and stores the
+// candidate list for display.
+func expandHomePath(p string) string {
+	if strings.HasPrefix(p, "~/") || p == "~" {
+		home, _ := os.UserHomeDir()
+		if p == "~" {
+			return home
+		}
+		return filepath.Join(home, p[2:])
+	}
+	return p
+}
+
+func (m *model) completeAddPath() {
+	raw := m.addInput.Value()
+	if raw == "" {
+		raw = "./"
+	}
+	// Treat a bare "~" as "~/" so the user can list home with one Tab.
+	if raw == "~" {
+		raw = "~/"
+		m.addInput.SetValue(raw)
+		m.addInput.SetCursor(len(raw))
+	}
+
+	sep := string(filepath.Separator)
+	var rawDir, prefix string
+	if i := strings.LastIndex(raw, sep); i >= 0 {
+		rawDir = raw[:i+1] // keep trailing separator
+		prefix = raw[i+1:]
+	} else {
+		rawDir = ""
+		prefix = raw
+	}
+
+	dir := expandHomePath(rawDir)
+	if dir == "" {
+		dir = "."
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		m.addCands = nil
+		m.addCandDir = ""
+		return
+	}
+	var matches []string
+	for _, e := range entries {
+		name := e.Name()
+		if prefix != "" && !strings.HasPrefix(strings.ToLower(name), strings.ToLower(prefix)) {
+			continue
+		}
+		if prefix == "" && strings.HasPrefix(name, ".") {
+			continue // hide dotfiles unless explicitly requested
+		}
+		if !isDirEntry(e, filepath.Join(dir, name)) {
+			continue
+		}
+		matches = append(matches, name)
+	}
+	sort.Strings(matches)
+
+	if len(matches) == 0 {
+		m.addCands = nil
+		m.addCandDir = dir
+		return
+	}
+
+	// Determine completion: single match → full + "/", multiple → LCP.
+	var completed string
+	if len(matches) == 1 {
+		completed = matches[0] + string(filepath.Separator)
+	} else {
+		completed = longestCommonPrefix(matches)
+		if completed == prefix {
+			// no further extension possible; just show candidates
+			m.addCands = matches
+			m.addCandDir = dir
+			return
+		}
+	}
+
+	// Rebuild input string, preserving the user's original dir style (~ etc).
+	newVal := rawDir + completed
+	m.addInput.SetValue(newVal)
+	m.addInput.SetCursor(len(newVal))
+
+	if len(matches) > 1 {
+		m.addCands = matches
+		m.addCandDir = dir
+	} else {
+		m.addCands = nil
+		m.addCandDir = ""
+	}
+}
+
+// formatCandidates lays directory names out in columns to fit `width` cells.
+// Trailing slash is appended to each so it's obvious these are directories.
+// At most 24 entries are shown; the rest are summarized.
+func formatCandidates(names []string, width int) string {
+	const maxShown = 24
+	truncated := false
+	if len(names) > maxShown {
+		names = names[:maxShown]
+		truncated = true
+	}
+	maxLen := 0
+	for _, n := range names {
+		if l := len(n) + 1; l > maxLen { // +1 for trailing /
+			maxLen = l
+		}
+	}
+	colW := maxLen + 2
+	if colW < 8 {
+		colW = 8
+	}
+	cols := width / colW
+	if cols < 1 {
+		cols = 1
+	}
+	var b strings.Builder
+	for i, n := range names {
+		entry := n + "/"
+		if pad := colW - len(entry); pad > 0 {
+			entry += strings.Repeat(" ", pad)
+		}
+		b.WriteString(ui.Dim(entry))
+		if (i+1)%cols == 0 && i != len(names)-1 {
+			b.WriteString("\n")
+		}
+	}
+	if truncated {
+		b.WriteString("\n" + ui.Dim("…more (refine to narrow)"))
+	}
+	return b.String()
+}
+
+// isDirEntry reports whether e (at full path full) is a directory, following
+// symlinks so that symlinked project dirs show up in tab-completion.
+func isDirEntry(e os.DirEntry, full string) bool {
+	if e.IsDir() {
+		return true
+	}
+	if e.Type()&os.ModeSymlink == 0 {
+		return false
+	}
+	fi, err := os.Stat(full)
+	if err != nil {
+		return false
+	}
+	return fi.IsDir()
+}
+
+func longestCommonPrefix(ss []string) string {
+	if len(ss) == 0 {
+		return ""
+	}
+	p := ss[0]
+	for _, s := range ss[1:] {
+		n := 0
+		for n < len(p) && n < len(s) && p[n] == s[n] {
+			n++
+		}
+		p = p[:n]
+		if p == "" {
+			break
+		}
+	}
+	return p
+}
+
+// ---- remove modal ----
+
+func (m *model) updateRemove(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c", "q", "n", "N":
+		m.removeOpen = false
+		return m, nil
+	case "enter", "y", "Y":
+		if len(m.sites) == 0 {
+			m.removeOpen = false
+			return m, nil
+		}
+		name := m.sites[m.cursor].site.Name
+		if err := registry.Remove(m.cfg, name); err != nil {
+			m.statusMsg = "remove " + name + ": " + err.Error()
+			m.removeOpen = false
+			return m, nil
+		}
+		m.removeOpen = false
+		m.loadSites()
+		m.statusMsg = "removed " + name
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m *model) renderRemoveModal() string {
+	width := 56
+	if width > m.width-4 {
+		width = m.width - 4
+	}
+	row := m.sites[m.cursor]
+	var b strings.Builder
+	b.WriteString(ui.Bold("Remove site"))
+	b.WriteString("\n\n")
+	b.WriteString(ui.Dim("name: ") + row.site.Name + "\n")
+	b.WriteString(ui.Dim("path: ") + row.site.Path + "\n")
+	b.WriteString("\n")
+	b.WriteString(ui.Warn("This removes the config entry and its cached audit."))
+	b.WriteString("\n\n")
+	b.WriteString(ui.Dim("y/enter confirm · n/esc/q cancel"))
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("196")).
+		Padding(0, 1).
+		Width(width).
+		Render(b.String())
 }
 
 func truncate(s string, n int) string {
