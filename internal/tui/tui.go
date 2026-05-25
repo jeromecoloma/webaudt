@@ -918,7 +918,11 @@ func (m *model) rebuildPreview() {
 
 	// Site-wide counts header.
 	total := mergeCounts(row.entry.Composer.Counts, row.entry.NPM.Counts)
-	b.WriteString("\n" + ui.CountsBadges(total) + "\n")
+	header := ui.CountsBadges(total)
+	if total.Total() == 0 && (row.entry.Composer.Status == types.StatusErrored || row.entry.NPM.Status == types.StatusErrored) {
+		header = ui.SeverityBadge(types.SevError)
+	}
+	b.WriteString("\n" + header + "\n")
 
 	for _, p := range []struct {
 		label string
@@ -930,7 +934,11 @@ func (m *model) rebuildPreview() {
 		if p.eco.Status == types.StatusNotApplicable {
 			continue
 		}
-		b.WriteString("\n" + ui.Bold(p.label) + "  " + ui.CountsSummaryLong(p.eco.Counts) + "\n")
+		summary := ui.CountsSummaryLong(p.eco.Counts)
+		if p.eco.Status == types.StatusErrored {
+			summary = ui.SeverityBadge(types.SevError)
+		}
+		b.WriteString("\n" + ui.Bold(p.label) + "  " + summary + "\n")
 		if p.eco.AuditPath != "" && p.eco.AuditPath != row.site.Path {
 			b.WriteString(ui.Dim("auditing: ") + p.eco.AuditPath + "\n")
 		}

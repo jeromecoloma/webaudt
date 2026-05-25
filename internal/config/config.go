@@ -140,6 +140,18 @@ func Load() (*File, error) {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 
+	// Expand `~` and `$VAR` / `${VAR}` in path-bearing fields so users can
+	// hand-write `composer_bin = "~/bin/composer74"` in config.toml.
+	f.Settings.ComposerBin = expandPath(f.Settings.ComposerBin)
+	f.Settings.NPMBin = expandPath(f.Settings.NPMBin)
+	for i := range f.Sites {
+		f.Sites[i].Path = expandPath(f.Sites[i].Path)
+		f.Sites[i].ComposerPath = expandPath(f.Sites[i].ComposerPath)
+		f.Sites[i].NPMPath = expandPath(f.Sites[i].NPMPath)
+		f.Sites[i].ComposerBin = expandPath(f.Sites[i].ComposerBin)
+		f.Sites[i].NPMBin = expandPath(f.Sites[i].NPMBin)
+	}
+
 	// Re-apply defaults for any fields the user omitted.
 	if f.Settings.CacheTTL == 0 && !zeroIsExplicit(path, "cache_ttl") {
 		f.Settings.CacheTTL = 3600
@@ -161,6 +173,25 @@ func Load() (*File, error) {
 		return nil, err
 	}
 	return &f, nil
+}
+
+// expandPath resolves a leading `~` to the user's home dir and expands
+// `$VAR` / `${VAR}` references. Bare names (e.g. "composer") pass through
+// unchanged so PATH lookups still work.
+func expandPath(p string) string {
+	if p == "" {
+		return p
+	}
+	if strings.HasPrefix(p, "~/") || p == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			if p == "~" {
+				p = home
+			} else {
+				p = filepath.Join(home, p[2:])
+			}
+		}
+	}
+	return os.ExpandEnv(p)
 }
 
 // zeroIsExplicit checks whether the raw TOML actually set the field to 0
