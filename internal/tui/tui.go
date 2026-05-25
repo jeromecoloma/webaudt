@@ -269,6 +269,10 @@ func (m *model) View() string {
 	preview := m.renderPreviewPane()
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, preview)
+	modalOpen := m.filterOpen || m.addOpen || m.removeOpen || m.helpOpen
+	if modalOpen {
+		body = dimBackground(body)
+	}
 	if m.filterOpen {
 		body = overlayCenter(body, m.renderFilterModal())
 	}
@@ -539,6 +543,39 @@ func overlayCenter(bg, over string) string {
 		out[row] = prefix + ol + suffix
 	}
 	return strings.Join(out, "\n")
+}
+
+// dimBackground strips ANSI styling from s and re-renders it in a dark gray,
+// simulating the darker backdrop shown behind modal overlays.
+func dimBackground(s string) string {
+	stripped := stripANSI(s)
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color("237"))
+	lines := strings.Split(stripped, "\n")
+	for i, l := range lines {
+		lines[i] = style.Render(l)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// stripANSI removes CSI escape sequences (\x1b[...m and friends) from s.
+func stripANSI(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inEsc := false
+	for _, r := range s {
+		if inEsc {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEsc = false
+			}
+			continue
+		}
+		if r == 0x1b {
+			inEsc = true
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // truncateCells keeps the first n display cells of s (ANSI-aware via lipgloss
