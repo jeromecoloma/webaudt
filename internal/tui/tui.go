@@ -701,51 +701,6 @@ func injectFieldsetTitle(rendered, label string, borderColor lipgloss.Color) str
 	return strings.Join(lines, "\n")
 }
 
-// renderPane wraps a body string in a bordered box with a fieldset-style title
-// overlaid on the top border (label + optional badge).
-func (m *model) renderPane(pane int, body string, contentWidth int) string {
-	active := m.focus == pane
-	borderColor := lipgloss.Color("244")
-	if active {
-		borderColor = lipgloss.Color("51")
-	}
-
-	wrapWidth := contentWidth - 2
-	if wrapWidth < 8 {
-		wrapWidth = contentWidth
-	}
-	var bodyLines []string
-	for _, line := range strings.Split(body, "\n") {
-		wrapped := wrap.String(wordwrap.String(line, wrapWidth), wrapWidth)
-		parts := strings.Split(wrapped, "\n")
-		bodyLines = append(bodyLines, parts[0])
-		for _, cont := range parts[1:] {
-			bodyLines = append(bodyLines, "  "+cont)
-		}
-	}
-	maxLines := m.contentHeight()
-	if len(bodyLines) > maxLines {
-		bodyLines = bodyLines[:maxLines]
-	}
-	for len(bodyLines) < maxLines {
-		bodyLines = append(bodyLines, " ")
-	}
-	body = strings.Join(bodyLines, "\n")
-
-	rendered := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderColor).
-		Width(contentWidth).
-		Height(maxLines).
-		MaxWidth(contentWidth+4).
-		MaxHeight(maxLines+2).
-		AlignVertical(lipgloss.Top).
-		Padding(0, 1).
-		Render(body)
-
-	return injectFieldsetTitle(rendered, m.fieldsetTitle(pane), borderColor)
-}
-
 // fieldsetTitle returns the label shown on a pane's top border.
 func (m *model) fieldsetTitle(pane int) string {
 	switch pane {
