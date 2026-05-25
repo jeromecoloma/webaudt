@@ -39,3 +39,6 @@ Thumbs.db
 .com.apple.timemachine.supported
 
 bin/webaudt
+
+# GoReleaser
+dist/

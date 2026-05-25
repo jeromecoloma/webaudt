@@ -8,8 +8,27 @@ Written in Go. Pure single-binary install — no external runtime deps beyond `c
 
 ## Install
 
+### Prebuilt binary (recommended — no Go required)
+
+Download the archive for your platform from the
+[latest release](https://github.com/jeromecoloma/webaudt/releases/latest),
+extract, and move `webaudt` onto your `$PATH`:
+
 ```sh
-git clone <this repo> ~/src/webaudt
+# macOS (Apple Silicon)
+curl -L -o webaudt.tar.gz https://github.com/jeromecoloma/webaudt/releases/latest/download/webaudt_$(curl -s https://api.github.com/repos/jeromecoloma/webaudt/releases/latest | grep tag_name | cut -d'"' -f4 | sed 's/^v//')_macos_arm64.tar.gz
+tar -xzf webaudt.tar.gz
+mv webaudt ~/.local/bin/
+webaudt doctor
+```
+
+Releases include macOS (arm64, x86_64) and Linux (arm64, x86_64) builds, plus a
+`checksums.txt`.
+
+### From source
+
+```sh
+git clone https://github.com/jeromecoloma/webaudt.git ~/src/webaudt
 cd ~/src/webaudt
 ./install.sh
 ```
