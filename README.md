@@ -90,6 +90,7 @@ composer_bin = "/home/user/Sites/mysite.com/bin/composer"
 | `↑` / `↓` | Scroll the preview pane (when focused)  |
 | `r`       | Refresh the highlighted site            |
 | `R`       | Refresh every site                      |
+| `o`       | Open selected site in a new tmux window |
 | `?`       | Show key hints                          |
 | `q` / Esc | Quit                                    |
 

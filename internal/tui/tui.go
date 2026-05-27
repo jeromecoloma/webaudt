@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -83,6 +84,11 @@ type model struct {
 
 	// help modal
 	helpOpen bool
+
+	// error modal
+	errorOpen  bool
+	errorTitle string
+	errorMsg   string
 }
 
 type siteRow struct {
@@ -167,7 +173,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMsg:
-		if m.filterOpen || m.addOpen || m.removeOpen {
+		if m.filterOpen || m.addOpen || m.removeOpen || m.helpOpen || m.errorOpen {
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -188,6 +194,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "esc", "q", "?", "enter":
 				m.helpOpen = false
+			}
+			return m, nil
+		}
+		if m.errorOpen {
+			switch msg.String() {
+			case "esc", "q", "enter":
+				m.errorOpen = false
 			}
 			return m, nil
 		}
@@ -225,6 +238,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.refreshCurrent()
 		case "R":
 			return m, m.refreshAll()
+		case "o":
+			m.openInTmuxWindow()
+			return m, nil
 		}
 		if m.focus == paneSidebar {
 			switch msg.String() {
@@ -269,7 +285,7 @@ func (m *model) View() string {
 	preview := m.renderPreviewPane()
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, preview)
-	modalOpen := m.filterOpen || m.addOpen || m.removeOpen || m.helpOpen
+	modalOpen := m.filterOpen || m.addOpen || m.removeOpen || m.helpOpen || m.errorOpen
 	if modalOpen {
 		body = dimBackground(body)
 	}
@@ -284,6 +300,9 @@ func (m *model) View() string {
 	}
 	if m.helpOpen {
 		body = overlayCenter(body, m.renderHelpModal())
+	}
+	if m.errorOpen {
+		body = overlayCenter(body, m.renderErrorModal())
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
 }
@@ -416,6 +435,57 @@ func (m *model) renderFilterModal() string {
 		Render(b.String())
 }
 
+// openInTmuxWindow opens a new tmux window in the selected site's directory.
+// If webaudt is not running inside a tmux session, surfaces an error modal.
+func (m *model) openInTmuxWindow() {
+	if len(m.sites) == 0 {
+		return
+	}
+	if os.Getenv("TMUX") == "" {
+		m.errorTitle = "Not running in tmux"
+		m.errorMsg = "“Open in another window” requires webaudt to be running inside a tmux session.\n\nStart a tmux session (e.g. `tmux new -s work`) and re-run webaudt from inside it."
+		m.errorOpen = true
+		return
+	}
+	row := m.sites[m.cursor]
+	cmd := exec.Command("tmux", "new-window", "-c", row.site.Path, "-n", row.site.Name)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		m.errorTitle = "tmux new-window failed"
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		m.errorMsg = msg
+		m.errorOpen = true
+		return
+	}
+	m.statusMsg = "opened " + row.site.Name + " in new tmux window"
+}
+
+// renderErrorModal shows a generic error/info dialog dismissed with esc/q/enter.
+func (m *model) renderErrorModal() string {
+	width := 60
+	if width > m.width-4 {
+		width = m.width - 4
+	}
+	var b strings.Builder
+	title := m.errorTitle
+	if title == "" {
+		title = "Error"
+	}
+	b.WriteString(ui.Failure(title))
+	b.WriteString("\n\n")
+	b.WriteString(m.errorMsg)
+	b.WriteString("\n\n")
+	b.WriteString(ui.Dim("enter/esc/q dismiss"))
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("196")).
+		Padding(0, 1).
+		Width(width).
+		Render(b.String())
+}
+
 // renderHelpModal shows the full keybinding list, grouped — description on
 // the left, key right-aligned. OpenCode-style. Dismiss with ?, esc, q, enter.
 func (m *model) renderHelpModal() string {
@@ -441,6 +511,7 @@ func (m *model) renderHelpModal() string {
 			{"Remove", "d"},
 			{"Refresh selected", "r"},
 			{"Refresh all", "R"},
+			{"Open in another window (tmux)", "o"},
 		}},
 		{"App", []row{
 			{"Toggle this help", "?"},
