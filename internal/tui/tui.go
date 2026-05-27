@@ -1849,8 +1849,8 @@ func (m *model) renderBottomPane() string {
 		BorderForeground(lipgloss.Color("244")).
 		Width(width).
 		Height(inner).
-		MaxWidth(width + 4).
-		MaxHeight(inner + 2).
+		MaxWidth(width+4).
+		MaxHeight(inner+2).
 		AlignVertical(lipgloss.Top).
 		Padding(0, 1).
 		Render(content)
@@ -1912,7 +1912,7 @@ func (m *model) renderLeaderboard(rows int) string {
 		name += strings.Repeat(" ", nameW-len(name))
 		total := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true).Render(fmt.Sprintf("%3d", e.total))
 		summary := ui.CountsSummaryShort(e.counts)
-		b.WriteString(fmt.Sprintf("%s %s  %s  %s", rank, name, total, summary))
+		fmt.Fprintf(&b, "%s %s  %s  %s", rank, name, total, summary)
 		if i < len(list)-1 {
 			b.WriteString("\n")
 		}
@@ -1966,7 +1966,7 @@ func (m *model) renderRecentScans(rows int) string {
 		} else {
 			status = ui.CountsSummaryShort(e.counts)
 		}
-		b.WriteString(fmt.Sprintf("  %s  %s  %s", name, when, status))
+		fmt.Fprintf(&b, "  %s  %s  %s", name, when, status)
 		if i < len(list)-1 {
 			b.WriteString("\n")
 		}

@@ -10,4 +10,11 @@ go vet ./...
 echo "pre-push: go test ./..."
 go test ./...
 
+if command -v golangci-lint >/dev/null 2>&1; then
+	echo "pre-push: golangci-lint run ./..."
+	golangci-lint run ./...
+else
+	echo "pre-push: golangci-lint not installed, skipping (CI will run it)"
+fi
+
 echo "pre-push: ok"
