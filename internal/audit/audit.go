@@ -395,11 +395,22 @@ func RunMany(ctx context.Context, settings config.Settings, sites []config.Site)
 
 // resolveBin splits a bin string into its executable and any leading args.
 // Accepts plain names ("composer"), absolute paths ("/usr/bin/composer"),
-// and wrapper forms like "/usr/bin/php7.4 /home/deploy/bin/composer" used
-// on multi-PHP boxes. Fields are whitespace-split — paths with spaces
-// aren't supported (uncommon for binaries).
+// paths containing spaces ("/Users/x/Library/Application Support/Herd/bin/composer"),
+// and wrapper forms like "/usr/bin/php7.4 /home/deploy/bin/composer" used on
+// multi-PHP boxes.
+//
+// Resolution order:
+//  1. Try the entire string as a single path (handles spaces in the path).
+//  2. Fall back to whitespace-splitting (handles wrapper forms).
 func resolveBin(bin string) (string, []string, error) {
-	parts := strings.Fields(bin)
+	trimmed := strings.TrimSpace(bin)
+	if trimmed == "" {
+		return "", nil, exec.ErrNotFound
+	}
+	if exe, err := exec.LookPath(trimmed); err == nil {
+		return exe, nil, nil
+	}
+	parts := strings.Fields(trimmed)
 	if len(parts) == 0 {
 		return "", nil, exec.ErrNotFound
 	}

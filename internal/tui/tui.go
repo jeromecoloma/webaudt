@@ -89,7 +89,18 @@ type model struct {
 	errorOpen  bool
 	errorTitle string
 	errorMsg   string
+
+	// bottom pane (tabbed)
+	bottomOpen bool
+	bottomTab  int // 0 = leaderboard, 1 = recent scans
 }
+
+const (
+	bottomTabLeaderboard = 0
+	bottomTabRecent      = 1
+	bottomTabCount       = 2
+	bottomInnerH         = 8 // inner rows of bottom pane when open
+)
 
 type siteRow struct {
 	site  config.Site
@@ -102,6 +113,7 @@ func newModel(cfg *config.File) *model {
 		cfg:        cfg,
 		refreshing: map[string]bool{},
 		focus:      paneSidebar,
+		bottomOpen: true,
 	}
 	m.loadSites()
 	return m
@@ -241,6 +253,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "o":
 			m.openInTmuxWindow()
 			return m, nil
+		case "b":
+			m.bottomOpen = !m.bottomOpen
+			m.resizePreview()
+			return m, nil
+		case "t":
+			if !m.bottomOpen {
+				m.bottomOpen = true
+				m.resizePreview()
+			} else {
+				m.bottomTab = (m.bottomTab + 1) % bottomTabCount
+			}
+			return m, nil
 		}
 		if m.focus == paneSidebar {
 			switch msg.String() {
@@ -283,8 +307,12 @@ func (m *model) View() string {
 
 	sidebar := m.renderSidebarPane()
 	preview := m.renderPreviewPane()
+	rightCol := preview
+	if m.bottomOpen {
+		rightCol = lipgloss.JoinVertical(lipgloss.Left, preview, m.renderBottomPane())
+	}
 
-	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, preview)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, rightCol)
 	modalOpen := m.filterOpen || m.addOpen || m.removeOpen || m.helpOpen || m.errorOpen
 	if modalOpen {
 		body = dimBackground(body)
@@ -513,6 +541,10 @@ func (m *model) renderHelpModal() string {
 			{"Refresh all", "R"},
 			{"Open in another window (tmux)", "o"},
 		}},
+		{"Bottom pane", []row{
+			{"Toggle CVE overview", "b"},
+			{"Switch tab", "t"},
+		}},
 		{"App", []row{
 			{"Toggle this help", "?"},
 			{"Quit", "q"},
@@ -730,12 +762,42 @@ func (m *model) previewWidth() int {
 	return w
 }
 
-// contentHeight is the inner usable height of a pane (lines that fit between
-// the top/bottom borders).
+// contentHeight is the inner usable height of the sidebar pane (lines that fit
+// between the top/bottom borders).
 func (m *model) contentHeight() int {
 	h := m.height - m.chromeRows()
 	if h < 5 {
 		h = 5
+	}
+	return h
+}
+
+// bottomPaneInner returns the inner row count for the bottom tabbed pane when
+// it is open, or 0 when closed.
+func (m *model) bottomPaneInner() int {
+	if !m.bottomOpen {
+		return 0
+	}
+	h := bottomInnerH
+	maxH := m.contentHeight() - 5 // leave room for preview borders+content
+	if h > maxH {
+		h = maxH
+	}
+	if h < 3 {
+		h = 3
+	}
+	return h
+}
+
+// previewContentHeight is the inner usable height of the preview pane, which
+// shrinks when the bottom pane is open.
+func (m *model) previewContentHeight() int {
+	if !m.bottomOpen {
+		return m.contentHeight()
+	}
+	h := m.contentHeight() - m.bottomPaneInner() - 2 // 2 = bottom-pane borders
+	if h < 3 {
+		h = 3
 	}
 	return h
 }
@@ -793,7 +855,7 @@ func (m *model) renderPreviewPane() string {
 	}
 
 	contentWidth := m.previewWidth()
-	maxLines := m.contentHeight()
+	maxLines := m.previewContentHeight()
 
 	lines := strings.Split(m.preview.View(), "\n")
 	var bar []string
@@ -994,7 +1056,7 @@ func (m *model) resizePreview() {
 	if w < 8 {
 		w = 8
 	}
-	h := m.contentHeight()
+	h := m.previewContentHeight()
 	if !m.previewReady {
 		m.preview = viewport.New(w, h)
 		m.previewReady = true
@@ -1284,7 +1346,7 @@ func (m *model) renderFooter() string {
 		}
 		hints = paneTag(1, "sites") + "  " + paneTag(2, "details") +
 			lipgloss.NewStyle().Foreground(lipgloss.Color("244")).
-				Render("   ·  a add · ? help · q quit")
+				Render("   ·  a add · b cves · ? help · q quit")
 	}
 	return "  " + hints
 }
@@ -1738,6 +1800,178 @@ func (m *model) renderRemoveModal() string {
 		Padding(0, 1).
 		Width(width).
 		Render(b.String())
+}
+
+// ---- bottom tabbed pane ----
+
+func (m *model) renderBottomPane() string {
+	width := m.previewWidth()
+	inner := m.bottomPaneInner()
+
+	tabs := []string{"Most vulnerable", "Recent scans"}
+	activeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Bold(true)
+	idleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	var header strings.Builder
+	for i, t := range tabs {
+		if i > 0 {
+			header.WriteString(idleStyle.Render(" · "))
+		}
+		label := fmt.Sprintf("[%d] %s", i+1, t)
+		if i == m.bottomTab {
+			header.WriteString(activeStyle.Render(label))
+		} else {
+			header.WriteString(idleStyle.Render(label))
+		}
+	}
+	header.WriteString(idleStyle.Render("    t switch · b close"))
+
+	var body string
+	switch m.bottomTab {
+	case bottomTabLeaderboard:
+		body = m.renderLeaderboard(inner - 2) // -2 for header + spacer
+	case bottomTabRecent:
+		body = m.renderRecentScans(inner - 2)
+	}
+
+	content := header.String() + "\n" + strings.Repeat("─", max(0, width-2)) + "\n" + body
+	// Pad/truncate to fit exactly `inner` rows.
+	lines := strings.Split(content, "\n")
+	if len(lines) > inner {
+		lines = lines[:inner]
+	}
+	for len(lines) < inner {
+		lines = append(lines, "")
+	}
+	content = strings.Join(lines, "\n")
+
+	rendered := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("244")).
+		Width(width).
+		Height(inner).
+		MaxWidth(width + 4).
+		MaxHeight(inner + 2).
+		AlignVertical(lipgloss.Top).
+		Padding(0, 1).
+		Render(content)
+	return injectFieldsetTitle(rendered, "CVE overview", lipgloss.Color("244"))
+}
+
+func (m *model) renderLeaderboard(rows int) string {
+	type entry struct {
+		name   string
+		counts cache.Counts
+		total  int
+	}
+	var list []entry
+	for _, row := range m.sites {
+		if row.entry == nil {
+			continue
+		}
+		c := mergeCounts(row.entry.Composer.Counts, row.entry.NPM.Counts)
+		if c.Total() == 0 {
+			continue
+		}
+		list = append(list, entry{name: row.site.Name, counts: c, total: c.Total()})
+	}
+	if len(list) == 0 {
+		return ui.Dim("  (no advisories across audited sites)")
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].total != list[j].total {
+			return list[i].total > list[j].total
+		}
+		// tie-break by critical, then high, then name
+		if list[i].counts.Critical != list[j].counts.Critical {
+			return list[i].counts.Critical > list[j].counts.Critical
+		}
+		if list[i].counts.High != list[j].counts.High {
+			return list[i].counts.High > list[j].counts.High
+		}
+		return list[i].name < list[j].name
+	})
+	if rows < 1 {
+		rows = 1
+	}
+	if len(list) > rows {
+		list = list[:rows]
+	}
+	nameW := 18
+	for _, e := range list {
+		if l := len(e.name); l > nameW {
+			nameW = l
+		}
+	}
+	if nameW > 36 {
+		nameW = 36
+	}
+	var b strings.Builder
+	for i, e := range list {
+		rank := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(fmt.Sprintf("%2d.", i+1))
+		name := truncate(e.name, nameW)
+		name += strings.Repeat(" ", nameW-len(name))
+		total := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true).Render(fmt.Sprintf("%3d", e.total))
+		summary := ui.CountsSummaryShort(e.counts)
+		b.WriteString(fmt.Sprintf("%s %s  %s  %s", rank, name, total, summary))
+		if i < len(list)-1 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+func (m *model) renderRecentScans(rows int) string {
+	type entry struct {
+		name      string
+		checkedAt int64
+		counts    cache.Counts
+		errored   bool
+	}
+	var list []entry
+	for _, row := range m.sites {
+		if row.entry == nil {
+			continue
+		}
+		c := mergeCounts(row.entry.Composer.Counts, row.entry.NPM.Counts)
+		errored := row.entry.Composer.Status == types.StatusErrored || row.entry.NPM.Status == types.StatusErrored
+		list = append(list, entry{name: row.site.Name, checkedAt: row.entry.CheckedAt, counts: c, errored: errored})
+	}
+	if len(list) == 0 {
+		return ui.Dim("  (no scans yet — press r/R to audit)")
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].checkedAt > list[j].checkedAt })
+	if rows < 1 {
+		rows = 1
+	}
+	if len(list) > rows {
+		list = list[:rows]
+	}
+	nameW := 18
+	for _, e := range list {
+		if l := len(e.name); l > nameW {
+			nameW = l
+		}
+	}
+	if nameW > 36 {
+		nameW = 36
+	}
+	var b strings.Builder
+	for i, e := range list {
+		name := truncate(e.name, nameW)
+		name += strings.Repeat(" ", nameW-len(name))
+		when := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(fmt.Sprintf("%-10s", ui.RelativeTime(e.checkedAt)))
+		var status string
+		if e.errored {
+			status = ui.SeverityBadge(types.SevError)
+		} else {
+			status = ui.CountsSummaryShort(e.counts)
+		}
+		b.WriteString(fmt.Sprintf("  %s  %s  %s", name, when, status))
+		if i < len(list)-1 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
 }
 
 func truncate(s string, n int) string {

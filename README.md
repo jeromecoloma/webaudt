@@ -91,8 +91,20 @@ composer_bin = "/home/user/Sites/mysite.com/bin/composer"
 | `r`       | Refresh the highlighted site            |
 | `R`       | Refresh every site                      |
 | `o`       | Open selected site in a new tmux window |
+| `b`       | Toggle CVE overview pane                |
+| `t`       | Open / switch CVE overview tab          |
 | `?`       | Show key hints                          |
 | `q` / Esc | Quit                                    |
+
+The CVE overview pane sits below **Details** and is open by default. It has
+two tabs:
+
+- **Most vulnerable** — sites ranked by total advisory count (tie-break:
+  critical → high → name).
+- **Recent scans** — sites ordered by last-checked time, newest first.
+
+Press `b` to hide/show it; `t` opens it (when closed) or cycles between
+tabs (when open).
 
 ## Exit codes (`webaudt status` / `refresh`)
 
