@@ -29,6 +29,7 @@ import (
 const (
 	paneSidebar = 0
 	panePreview = 1
+	paneBottom  = 2
 
 	sidebarWidth = 32 // content width inside borders+padding
 )
@@ -240,7 +241,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focus = panePreview
 			return m, nil
 		case "tab":
-			m.focus = (m.focus + 1) % 2
+			m.focus = (m.focus + 1) % m.paneCount()
+			return m, nil
+		case "shift+tab":
+			n := m.paneCount()
+			m.focus = (m.focus - 1 + n) % n
 			return m, nil
 		case "?":
 			m.helpOpen = true
@@ -255,7 +260,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "b":
 			m.bottomOpen = !m.bottomOpen
+			if !m.bottomOpen && m.focus == paneBottom {
+				m.focus = panePreview
+			}
 			m.resizePreview()
+			return m, nil
+		case "3":
+			if m.bottomOpen {
+				m.focus = paneBottom
+			}
 			return m, nil
 		case "t":
 			if !m.bottomOpen {
@@ -264,6 +277,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.bottomTab = (m.bottomTab + 1) % bottomTabCount
 			}
+			m.focus = paneBottom
 			return m, nil
 		}
 		if m.focus == paneSidebar {
@@ -288,6 +302,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.moveSite(-1)
 			case "J", "shift+down":
 				m.moveSite(+1)
+			}
+			return m, nil
+		}
+		if m.focus == paneBottom {
+			switch msg.String() {
+			case "h", "left", "k", "up":
+				m.bottomTab = (m.bottomTab - 1 + bottomTabCount) % bottomTabCount
+			case "l", "right", "j", "down":
+				m.bottomTab = (m.bottomTab + 1) % bottomTabCount
 			}
 			return m, nil
 		}
@@ -525,7 +548,9 @@ func (m *model) renderHelpModal() string {
 		{"Navigation", []row{
 			{"Focus sites pane", "1"},
 			{"Focus details pane", "2"},
+			{"Focus CVE overview pane", "3"},
 			{"Cycle panes", "tab"},
+			{"Cycle panes (reverse)", "shift+tab"},
 			{"Move down", "j"},
 			{"Move up", "k"},
 			{"Jump to first", "g"},
@@ -834,6 +859,15 @@ func injectFieldsetTitle(rendered, label string, borderColor lipgloss.Color) str
 	return strings.Join(lines, "\n")
 }
 
+// paneCount returns the number of focusable panes in the tab cycle. The bottom
+// CVE-overview pane only participates when it is open.
+func (m *model) paneCount() int {
+	if m.bottomOpen {
+		return 3
+	}
+	return 2
+}
+
 // fieldsetTitle returns the label shown on a pane's top border.
 func (m *model) fieldsetTitle(pane int) string {
 	switch pane {
@@ -841,6 +875,8 @@ func (m *model) fieldsetTitle(pane int) string {
 		return "Sites"
 	case panePreview:
 		return "Details"
+	case paneBottom:
+		return "CVE overview"
 	}
 	return ""
 }
@@ -1344,9 +1380,12 @@ func (m *model) renderFooter() string {
 			}
 			return marker + " " + label
 		}
-		hints = paneTag(1, "sites") + "  " + paneTag(2, "details") +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("244")).
-				Render("   ·  a add · b cves · ? help · q quit")
+		hints = paneTag(1, "sites") + "  " + paneTag(2, "details")
+		if m.bottomOpen {
+			hints += "  " + paneTag(3, "cves")
+		}
+		hints += lipgloss.NewStyle().Foreground(lipgloss.Color("244")).
+			Render("   ·  a add · b cves · ? help · q quit")
 	}
 	return "  " + hints
 }
@@ -1807,6 +1846,11 @@ func (m *model) renderRemoveModal() string {
 func (m *model) renderBottomPane() string {
 	width := m.previewWidth()
 	inner := m.bottomPaneInner()
+	active := m.focus == paneBottom
+	borderColor := lipgloss.Color("244")
+	if active {
+		borderColor = lipgloss.Color("51")
+	}
 
 	tabs := []string{"Most vulnerable", "Recent scans"}
 	activeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Bold(true)
@@ -1846,7 +1890,7 @@ func (m *model) renderBottomPane() string {
 
 	rendered := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("244")).
+		BorderForeground(borderColor).
 		Width(width).
 		Height(inner).
 		MaxWidth(width+4).
@@ -1854,7 +1898,7 @@ func (m *model) renderBottomPane() string {
 		AlignVertical(lipgloss.Top).
 		Padding(0, 1).
 		Render(content)
-	return injectFieldsetTitle(rendered, "CVE overview", lipgloss.Color("244"))
+	return injectFieldsetTitle(rendered, m.fieldsetTitle(paneBottom), borderColor)
 }
 
 func (m *model) renderLeaderboard(rows int) string {
