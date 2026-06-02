@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -59,6 +60,7 @@ type model struct {
 	width, height       int
 	refreshing          map[string]bool
 	statusMsg           string
+	statusSetAt         time.Time
 	previewContent      string // raw, unwrapped — viewport handles the wrap+scroll
 	preview             viewport.Model
 	previewReady        bool
@@ -152,7 +154,7 @@ func (m *model) moveSite(delta int) {
 	m.cfg.Sites[m.cursor], m.cfg.Sites[j] = m.cfg.Sites[j], m.cfg.Sites[m.cursor]
 	m.cursor = j
 	if err := m.cfg.Save(); err != nil {
-		m.statusMsg = "save config: " + err.Error()
+		m.setStatus("save config: " + err.Error())
 		return
 	}
 	m.rebuildPreview()
@@ -160,7 +162,22 @@ func (m *model) moveSite(delta int) {
 
 // ---- bubbletea Model ----
 
-func (m *model) Init() tea.Cmd { return nil }
+// statusTTL is how long a transient status message lingers before auto-clearing.
+const statusTTL = 4 * time.Second
+
+func (m *model) Init() tea.Cmd { return statusTick() }
+
+// setStatus sets a transient status message and stamps it so the ticker can expire it.
+func (m *model) setStatus(s string) {
+	m.statusMsg = s
+	m.statusSetAt = time.Now()
+}
+
+type statusTickMsg struct{}
+
+func statusTick() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return statusTickMsg{} })
+}
 
 type refreshDoneMsg struct {
 	name string
@@ -175,13 +192,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizePreview()
 		return m, nil
 
+	case statusTickMsg:
+		if m.statusMsg != "" && time.Since(m.statusSetAt) >= statusTTL {
+			m.statusMsg = ""
+		}
+		return m, statusTick()
+
 	case refreshDoneMsg:
 		delete(m.refreshing, msg.name)
 		m.loadSites()
 		if msg.err != nil {
-			m.statusMsg = "refresh " + msg.name + ": " + msg.err.Error()
+			m.setStatus("refresh " + msg.name + ": " + msg.err.Error())
 		} else {
-			m.statusMsg = "refreshed " + msg.name
+			m.setStatus("refreshed " + msg.name)
 		}
 		return m, nil
 
@@ -510,7 +533,7 @@ func (m *model) openInTmuxWindow() {
 		m.errorOpen = true
 		return
 	}
-	m.statusMsg = "opened " + row.site.Name + " in new tmux window"
+	m.setStatus("opened " + row.site.Name + " in new tmux window")
 }
 
 // renderErrorModal shows a generic error/info dialog dismissed with esc/q/enter.
@@ -1433,7 +1456,7 @@ func (m *model) refreshAll() tea.Cmd {
 
 func (m *model) startRefresh(site config.Site) tea.Cmd {
 	m.refreshing[site.Name] = true
-	m.statusMsg = "refreshing " + site.Name
+	m.setStatus("refreshing " + site.Name)
 	cfg := m.cfg
 	return func() tea.Msg {
 		err := audit.RunSite(context.Background(), cfg.Settings, site)
@@ -1532,7 +1555,7 @@ func (m *model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.rebuildPreview()
-		m.statusMsg = "added " + name
+		m.setStatus("added " + name)
 		return m, nil
 	case "n", "N", "backspace":
 		m.addStage = 0
@@ -1805,13 +1828,13 @@ func (m *model) updateRemove(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		name := m.sites[m.cursor].site.Name
 		if err := registry.Remove(m.cfg, name); err != nil {
-			m.statusMsg = "remove " + name + ": " + err.Error()
+			m.setStatus("remove " + name + ": " + err.Error())
 			m.removeOpen = false
 			return m, nil
 		}
 		m.removeOpen = false
 		m.loadSites()
-		m.statusMsg = "removed " + name
+		m.setStatus("removed " + name)
 		return m, nil
 	}
 	return m, nil
