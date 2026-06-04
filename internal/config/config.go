@@ -21,6 +21,7 @@ type Settings struct {
 	ComposerBin    string `toml:"composer_bin"`
 	NPMBin         string `toml:"npm_bin"`
 	Color          string `toml:"color"`
+	NerdFonts      bool   `toml:"nerd_fonts"`
 }
 
 // Site is one [[sites]] entry.

@@ -46,6 +46,7 @@ func Run() error {
 	if err != nil {
 		return err
 	}
+	ui.SetNerdFonts(cfg.Settings.NerdFonts)
 	m := newModel(cfg)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err = p.Run()
@@ -1201,10 +1202,10 @@ func (m *model) rebuildPreview() {
 
 	b.WriteString(ui.Dim("checked: ") + ui.AbsTime(row.entry.CheckedAt) + " " + ui.Dim("("+ui.RelativeTime(row.entry.CheckedAt)+")") + "\n")
 	if row.laravel != "" {
-		b.WriteString(ui.Dim("laravel: ") + row.laravel + "\n")
+		b.WriteString(ui.Dim("laravel: ") + ui.IconLaravel() + row.laravel + "\n")
 	}
 	if row.nodeVers != "" {
-		b.WriteString(ui.Dim("node:    ") + row.nodeVers + "\n")
+		b.WriteString(ui.Dim("node:    ") + ui.IconNode() + row.nodeVers + "\n")
 	}
 
 	// Site-wide counts header.
@@ -1217,10 +1218,11 @@ func (m *model) rebuildPreview() {
 
 	for _, p := range []struct {
 		label string
+		icon  string
 		eco   cache.Ecosystem
 	}{
-		{"composer", row.entry.Composer},
-		{"npm", row.entry.NPM},
+		{"composer", ui.IconPHP(), row.entry.Composer},
+		{"npm", ui.IconNPM(), row.entry.NPM},
 	} {
 		if p.eco.Status == types.StatusNotApplicable {
 			continue
@@ -1229,7 +1231,7 @@ func (m *model) rebuildPreview() {
 		if p.eco.Status == types.StatusErrored {
 			summary = ui.SeverityBadge(types.SevError)
 		}
-		b.WriteString("\n" + ui.Bold(p.label) + "  " + summary + "\n")
+		b.WriteString("\n" + p.icon + ui.Bold(p.label) + "  " + summary + "\n")
 		if p.eco.AuditPath != "" && p.eco.AuditPath != row.site.Path {
 			b.WriteString(ui.Dim("auditing: ") + p.eco.AuditPath + "\n")
 		}

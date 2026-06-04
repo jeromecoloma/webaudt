@@ -296,3 +296,50 @@ func isStdoutTTY() bool {
 	}
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
+
+// nerdFonts gates Nerd Font (devicon) glyphs. Off by default — enable via the
+// nerd_fonts config setting or WEBAUDT_NERD_FONTS=1, since the glyphs render as
+// tofu boxes on terminals without a patched Nerd Font.
+var nerdFonts bool
+
+// SetNerdFonts is called once at startup with the config setting. The env var
+// WEBAUDT_NERD_FONTS (1/true to force on, 0/false to force off) overrides it.
+func SetNerdFonts(enabled bool) {
+	switch strings.ToLower(os.Getenv("WEBAUDT_NERD_FONTS")) {
+	case "1", "true", "yes", "on":
+		nerdFonts = true
+		return
+	case "0", "false", "no", "off":
+		nerdFonts = false
+		return
+	}
+	nerdFonts = enabled
+}
+
+// Devicon glyphs (Nerd Font Private Use Area). See nerdfonts.com.
+const (
+	glyphLaravel = "\ue73f" // nf-dev-laravel
+	glyphNode    = "\ue718" // nf-dev-nodejs_small
+	glyphPHP     = "\ue73d" // nf-dev-php
+	glyphNPM     = "\ue71e" // nf-dev-npm
+)
+
+// IconLaravel returns the Laravel glyph (+ trailing space) when Nerd Fonts are
+// enabled, otherwise "". The other Icon* helpers behave the same.
+func IconLaravel() string { return icon(glyphLaravel) }
+
+// IconNode returns the Node.js glyph when Nerd Fonts are enabled, else "".
+func IconNode() string { return icon(glyphNode) }
+
+// IconPHP returns the PHP glyph when Nerd Fonts are enabled, else "".
+func IconPHP() string { return icon(glyphPHP) }
+
+// IconNPM returns the npm glyph when Nerd Fonts are enabled, else "".
+func IconNPM() string { return icon(glyphNPM) }
+
+func icon(glyph string) string {
+	if !nerdFonts {
+		return ""
+	}
+	return glyph + " "
+}
