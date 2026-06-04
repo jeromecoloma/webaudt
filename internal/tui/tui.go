@@ -106,9 +106,11 @@ const (
 )
 
 type siteRow struct {
-	site  config.Site
-	entry *cache.Entry
-	worst string
+	site     config.Site
+	entry    *cache.Entry
+	worst    string
+	laravel  string // laravel/framework version, if a Laravel app
+	nodeVers string // .nvmrc Node version, if an npm app
 }
 
 func newModel(cfg *config.File) *model {
@@ -126,6 +128,8 @@ func (m *model) loadSites() {
 	m.sites = m.sites[:0]
 	for _, s := range m.cfg.Sites {
 		row := siteRow{site: s, worst: types.SevNever}
+		row.laravel = registry.LaravelVersion(s)
+		row.nodeVers = registry.NodeVersion(s)
 		if cache.Exists(s.Path) {
 			if e, err := cache.Read(s.Path); err == nil {
 				row.entry = e
@@ -1196,6 +1200,12 @@ func (m *model) rebuildPreview() {
 	}
 
 	b.WriteString(ui.Dim("checked: ") + ui.AbsTime(row.entry.CheckedAt) + " " + ui.Dim("("+ui.RelativeTime(row.entry.CheckedAt)+")") + "\n")
+	if row.laravel != "" {
+		b.WriteString(ui.Dim("laravel: ") + row.laravel + "\n")
+	}
+	if row.nodeVers != "" {
+		b.WriteString(ui.Dim("node:    ") + row.nodeVers + "\n")
+	}
 
 	// Site-wide counts header.
 	total := mergeCounts(row.entry.Composer.Counts, row.entry.NPM.Counts)

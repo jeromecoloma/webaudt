@@ -4,6 +4,7 @@ package registry
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -257,6 +258,79 @@ func readNVMRC(path string) string {
 		return strings.TrimSpace(sc.Text())
 	}
 	return ""
+}
+
+// LaravelVersion returns the laravel/framework version for a composer-based
+// site, or "" if the project is not a Laravel app. It prefers the exact
+// installed version from composer.lock and falls back to the constraint in
+// composer.json.
+func LaravelVersion(site config.Site) string {
+	if site.Type != types.TypeComposer && site.Type != types.TypeBoth {
+		return ""
+	}
+	dir := site.ComposerPath
+	if dir == "" {
+		dir = detectEcosystemPath(site.Path, "composer.json")
+	}
+	if dir == "" {
+		return ""
+	}
+	if v := laravelFromLock(filepath.Join(dir, "composer.lock")); v != "" {
+		return v
+	}
+	return laravelFromManifest(filepath.Join(dir, "composer.json"))
+}
+
+func laravelFromLock(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var lock struct {
+		Packages []struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"packages"`
+	}
+	if err := json.Unmarshal(data, &lock); err != nil {
+		return ""
+	}
+	for _, p := range lock.Packages {
+		if p.Name == "laravel/framework" {
+			return strings.TrimPrefix(p.Version, "v")
+		}
+	}
+	return ""
+}
+
+func laravelFromManifest(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var m struct {
+		Require map[string]string `json:"require"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return ""
+	}
+	return m.Require["laravel/framework"]
+}
+
+// NodeVersion returns the Node version pinned in .nvmrc for an npm-based site,
+// or "" if the project has no npm ecosystem or no .nvmrc.
+func NodeVersion(site config.Site) string {
+	if site.Type != types.TypeNPM && site.Type != types.TypeBoth {
+		return ""
+	}
+	dir := site.NPMPath
+	if dir == "" {
+		dir = detectEcosystemPath(site.Path, "package.json")
+	}
+	if dir == "" {
+		return ""
+	}
+	return readNVMRC(dir)
 }
 
 func expandHome(p string) string {
