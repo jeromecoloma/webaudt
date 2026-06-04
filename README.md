@@ -68,6 +68,7 @@ parallel_audits = 4
 composer_bin = "composer"
 npm_bin = "npm"
 color = "auto"
+nerd_fonts = false   # set true for Laravel/PHP/Node/npm devicons in the detail pane
 
 [[sites]]
 name = "mysite"
@@ -79,6 +80,13 @@ npm_path = "/home/user/Sites/mysite.com/www"
 # when they differ from the global default. Edit freely.
 composer_bin = "/home/user/Sites/mysite.com/bin/composer"
 ```
+
+The detail pane shows the project's Laravel version (from `composer.lock`,
+falling back to the `composer.json` constraint) and Node version (from
+`.nvmrc`) when present. Set `nerd_fonts = true` — or `WEBAUDT_NERD_FONTS=1`,
+which overrides the config — to prefix those lines and the composer/npm
+ecosystem headers with devicons. Requires a [Nerd Font](https://www.nerdfonts.com/)
+in your terminal; left off by default to avoid tofu boxes.
 
 ## TUI keys
 
