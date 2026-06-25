@@ -8,7 +8,7 @@ import (
 )
 
 // Version is the build version. Override via -ldflags "-X main.Version=..." for releases.
-var Version = "0.3.3"
+var Version = "0.3.4"
 
 func main() {
 	root := newRootCmd()
