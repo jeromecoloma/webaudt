@@ -112,6 +112,7 @@ type siteRow struct {
 	worst    string
 	laravel  string // laravel/framework version, if a Laravel app
 	nodeVers string // .nvmrc Node version, if an npm app
+	branch   string // current git branch, if a git working tree
 }
 
 func newModel(cfg *config.File) *model {
@@ -131,6 +132,7 @@ func (m *model) loadSites() {
 		row := siteRow{site: s, worst: types.SevNever}
 		row.laravel = registry.LaravelVersion(s)
 		row.nodeVers = registry.NodeVersion(s)
+		row.branch = registry.GitBranch(s)
 		if cache.Exists(s.Path) {
 			if e, err := cache.Read(s.Path); err == nil {
 				row.entry = e
@@ -1190,6 +1192,9 @@ func (m *model) rebuildPreview() {
 		typeLabel = "composer+npm"
 	}
 	b.WriteString(ui.Dim("type:  ") + typeLabel + "\n")
+	if row.branch != "" {
+		b.WriteString(ui.Dim("branch: ") + ui.IconGit() + row.branch + "\n")
+	}
 
 	if row.entry == nil {
 		b.WriteString("\n" + ui.Warn("NOT YET AUDITED") + "\n")

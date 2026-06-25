@@ -322,6 +322,7 @@ const (
 	glyphNode    = "\ue718" // nf-dev-nodejs_small
 	glyphPHP     = "\ue73d" // nf-dev-php
 	glyphNPM     = "\ue71e" // nf-dev-npm
+	glyphGit     = "\ue725" // nf-dev-git_branch
 )
 
 // IconLaravel returns the Laravel glyph (+ trailing space) when Nerd Fonts are
@@ -336,6 +337,9 @@ func IconPHP() string { return icon(glyphPHP) }
 
 // IconNPM returns the npm glyph when Nerd Fonts are enabled, else "".
 func IconNPM() string { return icon(glyphNPM) }
+
+// IconGit returns the git branch glyph when Nerd Fonts are enabled, else "".
+func IconGit() string { return icon(glyphGit) }
 
 func icon(glyph string) string {
 	if !nerdFonts {

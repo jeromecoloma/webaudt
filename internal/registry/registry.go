@@ -333,6 +333,56 @@ func NodeVersion(site config.Site) string {
 	return readNVMRC(dir)
 }
 
+// GitBranch returns the current branch name for the git repo at the site path,
+// or "" if the path is not inside a git working tree. It reads .git/HEAD
+// directly (no git binary required), walking up parent directories to find the
+// repository root.
+func GitBranch(site config.Site) string {
+	dir := site.Path
+	if dir == "" {
+		return ""
+	}
+	for {
+		gitDir := filepath.Join(dir, ".git")
+		if fi, err := os.Stat(gitDir); err == nil {
+			// .git is a file (worktree/submodule) pointing at the real gitdir.
+			if !fi.IsDir() {
+				if data, err := os.ReadFile(gitDir); err == nil {
+					if p := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(data)), "gitdir:")); p != "" {
+						gitDir = p
+					}
+				}
+			}
+			if b := branchFromHEAD(filepath.Join(gitDir, "HEAD")); b != "" {
+				return b
+			}
+			return ""
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+func branchFromHEAD(head string) string {
+	data, err := os.ReadFile(head)
+	if err != nil {
+		return ""
+	}
+	ref := strings.TrimSpace(string(data))
+	if strings.HasPrefix(ref, "ref:") {
+		ref = strings.TrimSpace(strings.TrimPrefix(ref, "ref:"))
+		return strings.TrimPrefix(ref, "refs/heads/")
+	}
+	// Detached HEAD: show short commit hash.
+	if len(ref) >= 7 {
+		return ref[:7]
+	}
+	return ref
+}
+
 func expandHome(p string) string {
 	if strings.HasPrefix(p, "~/") || p == "~" {
 		home, _ := os.UserHomeDir()
