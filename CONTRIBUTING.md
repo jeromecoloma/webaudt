@@ -40,6 +40,19 @@ golangci-lint run
 
 CI runs all of the above on every PR.
 
+## Versioning
+
+The version comes from **git tags only** — there is no version constant to bump.
+
+`main.Version` is the sentinel `"dev"`. Release builds overwrite it at link
+time: goreleaser stamps `-X main.Version={{.Version}}` from the tag, and
+`install.sh`'s build-from-source path stamps `git describe --tags`. So an
+unstamped local build honestly reports `dev`, and a released binary reports its
+tag.
+
+To cut a release, push a tag (`git tag v0.4.0 && git push --tags`) — do **not**
+open a PR that edits a version number.
+
 ## Submitting a pull request
 
 1. Fork the repo and create a topic branch from `main`.

@@ -16,7 +16,10 @@ if [ ! -x "$src" ]; then
         exit 1
     fi
     printf '  Building webaudt...\n'
-    (cd "$src_dir" && go build -o bin/webaudt ./cmd/webaudt)
+    # Stamp the version from git so a source build reports a real version
+    # instead of the "dev" sentinel baked into main.go.
+    version="$(cd "$src_dir" && git describe --tags --always --dirty 2>/dev/null || echo dev)"
+    (cd "$src_dir" && go build -ldflags "-X main.Version=$version" -o bin/webaudt ./cmd/webaudt)
 fi
 
 mkdir -p "$target_dir"
