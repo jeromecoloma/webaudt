@@ -71,4 +71,14 @@ release:
     Prebuilt binaries for macOS (Apple Silicon + Intel) and Linux (amd64 + arm64).
   footer: |
     ---
-    **Install:** download the archive for your platform, extract, and move `webaudt` into a directory on your `$PATH` (e.g. `~/.local/bin`).
+    **Install:**
+
+    ```sh
+    curl -fsSL https://raw.githubusercontent.com/jeromecoloma/webaudt/main/install.sh | bash
+    ```
+
+    Verifies the archive's sha256 against `checksums.txt` before installing.
+
+    To install by hand, download the archive and `checksums.txt`, run
+    `shasum -a 256 -c checksums.txt --ignore-missing` (`sha256sum -c` on Linux),
+    then extract and move `webaudt` onto your `$PATH`.

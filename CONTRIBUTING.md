@@ -4,7 +4,7 @@ Thanks for your interest. This project is **active** and welcomes contributions.
 
 ## Development setup
 
-Requires Go 1.21+ (project currently builds with Go 1.26).
+Requires Go 1.26+.
 
 ```sh
 git clone https://github.com/jeromecoloma/webaudt.git

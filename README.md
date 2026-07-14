@@ -10,20 +10,41 @@ Written in Go. Pure single-binary install — no external runtime deps beyond `c
 
 ### Prebuilt binary (recommended — no Go required)
 
-Download the archive for your platform from the
-[latest release](https://github.com/jeromecoloma/webaudt/releases/latest),
-extract, and move `webaudt` onto your `$PATH`:
+```sh
+curl -fsSL https://raw.githubusercontent.com/jeromecoloma/webaudt/main/install.sh | bash
+```
+
+This detects your platform, downloads the matching archive from the latest
+release, **verifies its sha256 against the release's `checksums.txt` before
+unpacking it**, installs `webaudt` into `~/.local/bin`, and sets up bash and zsh
+completions. It never uses `sudo`, and it aborts without installing anything if
+the checksum does not match.
+
+Options:
 
 ```sh
-# macOS (Apple Silicon)
-curl -L -o webaudt.tar.gz https://github.com/jeromecoloma/webaudt/releases/latest/download/webaudt_$(curl -s https://api.github.com/repos/jeromecoloma/webaudt/releases/latest | grep tag_name | cut -d'"' -f4 | sed 's/^v//')_macos_arm64.tar.gz
-tar -xzf webaudt.tar.gz
+./install.sh --version v0.3.4   # pin a specific release
+PREFIX=~/bin ./install.sh       # install somewhere else
+./install.sh --help
+```
+
+Releases include macOS (arm64, x86_64) and Linux (arm64, x86_64) builds.
+
+<details>
+<summary>Prefer to install by hand?</summary>
+
+Download the archive and `checksums.txt` for your platform from the
+[latest release](https://github.com/jeromecoloma/webaudt/releases/latest), then
+verify it before extracting:
+
+```sh
+shasum -a 256 -c checksums.txt --ignore-missing   # sha256sum -c on Linux
+tar -xzf webaudt_<version>_macos_arm64.tar.gz
 mv webaudt ~/.local/bin/
 webaudt doctor
 ```
 
-Releases include macOS (arm64, x86_64) and Linux (arm64, x86_64) builds, plus a
-`checksums.txt`.
+</details>
 
 ### From source
 
@@ -33,7 +54,9 @@ cd ~/src/webaudt
 ./install.sh
 ```
 
-`install.sh` builds the binary, symlinks it into `~/.local/bin/webaudt`, and installs shell completions for bash and zsh.
+Run inside a checkout, `install.sh` builds the binary, symlinks it into
+`~/.local/bin/webaudt`, and installs shell completions — so a rebuild is picked
+up immediately. (Use `--from-release` to download a prebuilt binary instead.)
 
 Build manually:
 
@@ -41,7 +64,7 @@ Build manually:
 go build -o bin/webaudt ./cmd/webaudt
 ```
 
-Requires Go 1.21+ to build. The compiled binary has no Go runtime dependency.
+Requires Go 1.26+ to build. The compiled binary has no Go runtime dependency.
 
 ## Quickstart
 
