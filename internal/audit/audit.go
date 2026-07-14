@@ -376,7 +376,6 @@ func RunMany(ctx context.Context, settings config.Settings, sites []config.Site)
 		wg   sync.WaitGroup
 	)
 	for _, s := range sites {
-		s := s
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -29,7 +30,8 @@ func newAddCmd() *cobra.Command {
 			}
 			res, err := registry.Resolve(cfg, opts)
 			if err != nil {
-				if dup, ok := err.(*registry.DuplicatePathError); ok {
+				var dup *registry.DuplicatePathError
+				if errors.As(err, &dup) {
 					renderDuplicate(dup)
 					os.Exit(1)
 				}

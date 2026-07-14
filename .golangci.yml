@@ -1,0 +1,39 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - errorlint
+    - misspell
+    - unconvert
+    - copyloopvar
+  settings:
+    errcheck:
+      exclude-functions:
+        - (*os.File).Close
+        - (io.Closer).Close
+    staticcheck:
+      checks:
+        - all
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
