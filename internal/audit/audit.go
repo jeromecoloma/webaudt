@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jeromecoloma/webaudt/internal/cache"
 	"github.com/jeromecoloma/webaudt/internal/config"
@@ -443,9 +444,16 @@ func resolveBin(bin string) (string, []string, error) {
 	return exe, parts[1:], nil
 }
 
+// truncate caps s at n runes, appending an ellipsis if it had to cut.
+// Rune-based, not byte-based: slicing bytes can land mid-rune and produce
+// invalid UTF-8, and these strings are subprocess stderr, which is arbitrary
+// text (non-ASCII package names, localized error messages).
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	if n <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	return string([]rune(s)[:n]) + "…"
 }

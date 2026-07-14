@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -88,5 +89,41 @@ func TestNewModel_SemaphoreFloor(t *testing.T) {
 	m := newModel(&config.File{Settings: config.Settings{ParallelAudits: config.Ptr(0)}})
 	if cap(m.refreshSem) < 1 {
 		t.Fatalf("refreshSem cap = %d, want >= 1", cap(m.refreshSem))
+	}
+}
+
+// tui.truncate fits a name into a column of n cells, so the ellipsis *replaces*
+// the last rune rather than being appended.
+func TestTruncate_RuneSafe(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		n    int
+		want string
+	}{
+		{"under the cap", "blog", 10, "blog"},
+		{"exactly the cap", "blog", 4, "blog"},
+		{"ascii cut", "my-long-site", 6, "my-lo…"},
+		{"n<=0 passes through", "blog", 0, "blog"},
+		{"tiny n", "blog", 2, "bl"},
+		// The bug: byte-slicing split these multibyte runes, printing U+FFFD and
+		// throwing off the column width the truncation was meant to enforce.
+		{"multibyte cut", "café-site", 6, "café-…"},
+		{"cjk", "東京都渋谷区", 4, "東京都…"},
+		{"multibyte under cap", "café", 10, "café"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := truncate(c.in, c.n)
+			if got != c.want {
+				t.Errorf("truncate(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("truncate(%q, %d) produced invalid UTF-8: %q", c.in, c.n, got)
+			}
+			if n := utf8.RuneCountInString(got); c.n > 0 && n > c.n {
+				t.Errorf("truncate(%q, %d) returned %d runes, over the cap", c.in, c.n, n)
+			}
+		})
 	}
 }

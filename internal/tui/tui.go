@@ -2072,15 +2072,20 @@ func (m *model) renderRecentScans(rows int) string {
 	return b.String()
 }
 
+// truncate caps s at n runes, reserving the last one for an ellipsis when it has
+// to cut. Rune-based, not byte-based: a site name like "café" or "东京" would
+// otherwise be sliced mid-rune, printing a replacement glyph and corrupting the
+// column width it was supposed to fit.
 func truncate(s string, n int) string {
 	if n <= 0 {
 		return s
 	}
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
 	if n < 3 {
-		return s[:n]
+		return string(r[:n])
 	}
-	return s[:n-1] + "…"
+	return string(r[:n-1]) + "…"
 }

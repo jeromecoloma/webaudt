@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jeromecoloma/webaudt/internal/cache"
 	"github.com/jeromecoloma/webaudt/internal/config"
@@ -237,5 +238,46 @@ func TestRunSite_TimeoutReleasesLock(t *testing.T) {
 	}
 	if !strings.Contains(entry.Composer.Error, "timed out") {
 		t.Errorf("cached error = %q, want it to mention the timeout", entry.Composer.Error)
+	}
+}
+
+func TestTruncate_RuneSafe(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		n    int
+		want string
+	}{
+		{"under the cap", "hello", 10, "hello"},
+		{"exactly the cap", "hello", 5, "hello"},
+		{"ascii cut", "hello world", 5, "hello…"},
+		{"zero", "hello", 0, ""},
+		{"negative", "hello", -1, ""},
+		// The bug: byte-slicing here split the 2-byte "é" / 3-byte CJK runes.
+		{"multibyte cut mid-rune", "café café", 4, "café…"},
+		{"cjk", "東京都渋谷区", 3, "東京都…"},
+		{"emoji", "🔥🔥🔥🔥", 2, "🔥🔥…"},
+		{"multibyte under cap", "café", 10, "café"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := truncate(c.in, c.n)
+			if got != c.want {
+				t.Errorf("truncate(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("truncate(%q, %d) produced invalid UTF-8: %q", c.in, c.n, got)
+			}
+		})
+	}
+}
+
+// The cap exists to bound subprocess stderr; make sure it counts runes, so a
+// 1000-rune non-ASCII message is not silently cut to garbage.
+func TestTruncate_CountsRunesNotBytes(t *testing.T) {
+	in := strings.Repeat("東", 20)
+	got := truncate(in, 20)
+	if got != in {
+		t.Errorf("20 CJK runes capped at 20 should pass through unchanged, got %q", got)
 	}
 }
