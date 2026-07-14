@@ -3,6 +3,7 @@
 package doctor
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -47,13 +48,18 @@ var requiredChecks = []Check{}
 
 // optionalChecks are only needed when a site of that type is registered.
 var optionalChecks = []Check{
-	{Name: "composer", MinVer: "2.0", ExtractFn: extractFromCmd("composer", []string{"--version"}, `(\d+\.\d+(\.\d+)?)`, strings.TrimPrefix)},
-	{Name: "npm", MinVer: "7.0", ExtractFn: extractFromCmd("npm", []string{"--version"}, `(\d+\.\d+(\.\d+)?)`, strings.TrimPrefix)},
+	{Name: "composer", MinVer: "2.0", ExtractFn: extractFromCmd("composer", []string{"--version"}, `(\d+\.\d+(\.\d+)?)`)},
+	{Name: "npm", MinVer: "7.0", ExtractFn: extractFromCmd("npm", []string{"--version"}, `(\d+\.\d+(\.\d+)?)`)},
 }
+
+// errUnparseableVersion means the tool is installed but we could not read a
+// version out of it. Distinct from "not installed": reporting an installed
+// composer as missing would send the user off to reinstall a tool they have.
+var errUnparseableVersion = errors.New("could not parse version")
 
 // extractFromCmd builds an ExtractFn that runs a command and pulls a version
 // substring out of its combined stdout/stderr via regex.
-func extractFromCmd(bin string, args []string, pat string, _ func(string, string) string) func() (string, error) {
+func extractFromCmd(bin string, args []string, pat string) func() (string, error) {
 	re := regexp.MustCompile(pat)
 	return func() (string, error) {
 		if _, err := exec.LookPath(bin); err != nil {
@@ -62,7 +68,7 @@ func extractFromCmd(bin string, args []string, pat string, _ func(string, string
 		out, _ := exec.Command(bin, args...).CombinedOutput()
 		m := re.FindString(string(out))
 		if m == "" {
-			return "", fmt.Errorf("could not parse version from %s output", bin)
+			return "", fmt.Errorf("%w from %s output", errUnparseableVersion, bin)
 		}
 		return m, nil
 	}
@@ -82,6 +88,11 @@ func Run() (required, optional []Result) {
 func runOne(c Check) Result {
 	v, err := c.ExtractFn()
 	if err != nil {
+		// Installed but unreadable version is not the same as missing — say so,
+		// rather than telling the user to install what they already have.
+		if errors.Is(err, errUnparseableVersion) {
+			return Result{Name: c.Name, Status: StatusUnknown, MinVer: c.MinVer}
+		}
 		return Result{Name: c.Name, Status: StatusMissing, MinVer: c.MinVer}
 	}
 	if !verGE(v, c.MinVer) {
@@ -171,6 +182,8 @@ func formatLine(r Result) string {
 	case StatusOutdated:
 		mark = ui.Warn("")
 		detail = fmt.Sprintf("%s (need %s)", r.Version, r.MinVer)
+	case StatusUnknown:
+		fallthrough
 	default:
 		mark = ui.Warn("")
 		detail = "installed, version unparseable (min " + r.MinVer + ")"
