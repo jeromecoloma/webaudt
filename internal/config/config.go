@@ -13,15 +13,78 @@ import (
 	"github.com/jeromecoloma/webaudt/internal/types"
 )
 
-// Settings are the [settings] block in config.toml. Per-site overrides
-// for ComposerBin/NPMBin live on Site.
+// Settings is the [settings] block in config.toml, exactly as written by the
+// user. Every field is a pointer so we can tell "omitted" from "explicitly set
+// to the zero value" — `cache_ttl = 0` (never cache) must survive a Save, and a
+// field the user never wrote must not be stamped into their file.
+//
+// Do not read these fields directly; call Resolve and read the Resolved value,
+// which has defaults applied. Per-site overrides for ComposerBin/NPMBin live on
+// Site.
 type Settings struct {
-	CacheTTL       int    `toml:"cache_ttl"`
-	ParallelAudits int    `toml:"parallel_audits"`
-	ComposerBin    string `toml:"composer_bin"`
-	NPMBin         string `toml:"npm_bin"`
-	Color          string `toml:"color"`
-	NerdFonts      bool   `toml:"nerd_fonts"`
+	CacheTTL       *int    `toml:"cache_ttl,omitempty"`
+	ParallelAudits *int    `toml:"parallel_audits,omitempty"`
+	ComposerBin    *string `toml:"composer_bin,omitempty"`
+	NPMBin         *string `toml:"npm_bin,omitempty"`
+	Color          *string `toml:"color,omitempty"`
+	NerdFonts      *bool   `toml:"nerd_fonts,omitempty"`
+}
+
+// Resolved is Settings with defaults applied — the form the rest of the program
+// consumes. Every field is a plain value, so there is no way to read an unset
+// setting by accident.
+type Resolved struct {
+	CacheTTL       int
+	ParallelAudits int
+	ComposerBin    string
+	NPMBin         string
+	Color          string
+	NerdFonts      bool
+}
+
+// Ptr returns a pointer to v. Handy for building Settings literals in tests and
+// in code that sets a setting explicitly.
+func Ptr[T any](v T) *T { return &v }
+
+// Resolve applies the built-in defaults to every omitted field.
+//
+// An explicit zero survives where it is meaningful: cache_ttl = 0 resolves to 0
+// (caching disabled), not to the 3600 default. For the string fields an explicit
+// "" is treated as omitted, matching the previous behaviour — an empty binary
+// name or colour mode is never something a user means.
+func (s Settings) Resolve() Resolved {
+	d := Defaults()
+	r := Resolved{
+		CacheTTL:       d.CacheTTL,
+		ParallelAudits: d.ParallelAudits,
+		ComposerBin:    d.ComposerBin,
+		NPMBin:         d.NPMBin,
+		Color:          d.Color,
+	}
+	if s.CacheTTL != nil {
+		r.CacheTTL = *s.CacheTTL
+	}
+	if s.ParallelAudits != nil {
+		r.ParallelAudits = *s.ParallelAudits
+	}
+	if s.ComposerBin != nil && *s.ComposerBin != "" {
+		r.ComposerBin = *s.ComposerBin
+	}
+	if s.NPMBin != nil && *s.NPMBin != "" {
+		r.NPMBin = *s.NPMBin
+	}
+	if s.Color != nil && *s.Color != "" {
+		r.Color = *s.Color
+	}
+	if s.NerdFonts != nil {
+		r.NerdFonts = *s.NerdFonts
+	}
+	// Expand `~` and `$VAR` here rather than in Load: mutating the Settings
+	// struct at load time would write the expanded absolute path back to the
+	// user's config.toml on the next Save.
+	r.ComposerBin = expandPath(r.ComposerBin)
+	r.NPMBin = expandPath(r.NPMBin)
+	return r
 }
 
 // Site is one [[sites]] entry.
@@ -62,8 +125,8 @@ type File struct {
 }
 
 // Defaults returns the built-in defaults applied when a field is omitted.
-func Defaults() Settings {
-	return Settings{
+func Defaults() Resolved {
+	return Resolved{
 		CacheTTL:       3600,
 		ParallelAudits: 4,
 		ComposerBin:    "composer",
@@ -109,14 +172,20 @@ func EnsureDirs() error {
 
 // writeDefault creates a starter config file with defaults and an empty sites list.
 func writeDefault(path string) error {
+	// The defaults are shown commented out rather than written as live values:
+	// an omitted setting resolves to its default at read time, so a user who
+	// never touches these keeps a config.toml that tracks future default changes
+	// instead of freezing today's values into their file.
 	body := `# webaudt configuration. See README + ` + "`webaudt --help`" + ` for the full schema.
 
 [settings]
-cache_ttl = 3600
-parallel_audits = 4
-composer_bin = "composer"
-npm_bin = "npm"
-color = "auto"
+# Defaults are shown below. Uncomment a line to override it.
+# cache_ttl = 3600        # seconds; 0 disables caching
+# parallel_audits = 4     # 1-16
+# composer_bin = "composer"
+# npm_bin = "npm"
+# color = "auto"          # auto|always|never
+# nerd_fonts = false
 
 # Register sites with: webaudt add /path/to/site
 `
@@ -135,39 +204,22 @@ func Load() (*File, error) {
 		}
 	}
 
+	// Settings are left exactly as the user wrote them — defaults are applied at
+	// read time by Settings.Resolve, never stamped into the struct. Anything we
+	// write into f.Settings here would be echoed back into config.toml by Save.
 	var f File
-	f.Settings = Defaults()
 	if _, err := toml.DecodeFile(path, &f); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 
-	// Expand `~` and `$VAR` / `${VAR}` in path-bearing fields so users can
-	// hand-write `composer_bin = "~/bin/composer74"` in config.toml.
-	f.Settings.ComposerBin = expandPath(f.Settings.ComposerBin)
-	f.Settings.NPMBin = expandPath(f.Settings.NPMBin)
+	// Expand `~` and `$VAR` / `${VAR}` in the site paths. (The settings-level
+	// binaries are expanded in Resolve, for the reason above.)
 	for i := range f.Sites {
 		f.Sites[i].Path = expandPath(f.Sites[i].Path)
 		f.Sites[i].ComposerPath = expandPath(f.Sites[i].ComposerPath)
 		f.Sites[i].NPMPath = expandPath(f.Sites[i].NPMPath)
 		f.Sites[i].ComposerBin = expandPath(f.Sites[i].ComposerBin)
 		f.Sites[i].NPMBin = expandPath(f.Sites[i].NPMBin)
-	}
-
-	// Re-apply defaults for any fields the user omitted.
-	if f.Settings.CacheTTL == 0 && !zeroIsExplicit(path, "cache_ttl") {
-		f.Settings.CacheTTL = 3600
-	}
-	if f.Settings.ParallelAudits == 0 {
-		f.Settings.ParallelAudits = 4
-	}
-	if f.Settings.ComposerBin == "" {
-		f.Settings.ComposerBin = "composer"
-	}
-	if f.Settings.NPMBin == "" {
-		f.Settings.NPMBin = "npm"
-	}
-	if f.Settings.Color == "" {
-		f.Settings.Color = "auto"
 	}
 
 	if err := f.Validate(); err != nil {
@@ -195,25 +247,9 @@ func expandPath(p string) string {
 	return os.ExpandEnv(p)
 }
 
-// zeroIsExplicit checks whether the raw TOML actually set the field to 0
-// (vs being omitted). Cheap text check — good enough for one numeric field.
-func zeroIsExplicit(path, key string) bool {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		l := strings.TrimSpace(line)
-		if strings.HasPrefix(l, key+" ") || strings.HasPrefix(l, key+"=") {
-			return strings.Contains(l, "0")
-		}
-	}
-	return false
-}
-
 // Validate enforces the rules in PRD §5.1.
 func (f *File) Validate() error {
-	s := f.Settings
+	s := f.Settings.Resolve()
 	if s.CacheTTL < 0 {
 		return fmt.Errorf("settings.cache_ttl must be a non-negative integer, got %d", s.CacheTTL)
 	}

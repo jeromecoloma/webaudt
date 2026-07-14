@@ -34,7 +34,7 @@ func newRefreshCmd() *cobra.Command {
 			for _, s := range targets {
 				fmt.Printf("  %s %s\n", ui.Accent("↻"), s.Name)
 			}
-			errs := audit.RunMany(context.Background(), cfg.Settings, targets)
+			errs := audit.RunMany(context.Background(), cfg.Settings.Resolve(), targets)
 			fmt.Println()
 			for name, err := range errs {
 				fmt.Printf("  %s %s: %s\n", ui.Failure(""), name, err)
@@ -69,7 +69,7 @@ func selectRefreshTargets(cfg *config.File, names []string, all bool) []config.S
 	}
 	out := make([]config.Site, 0, len(cfg.Sites))
 	for _, s := range cfg.Sites {
-		if !cache.IsFresh(s.Path, cfg.Settings.CacheTTL) {
+		if !cache.IsFresh(s.Path, cfg.Settings.Resolve().CacheTTL) {
 			out = append(out, s)
 		}
 	}

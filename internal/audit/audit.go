@@ -331,7 +331,7 @@ func RunNpm(ctx context.Context, npath, bin string) cache.Ecosystem {
 // Acquires a per-site lock; returns immediately with errLocked if already in flight.
 var errLocked = errors.New("audit already in flight for this site")
 
-func RunSite(ctx context.Context, settings config.Settings, site config.Site) error {
+func RunSite(ctx context.Context, settings config.Resolved, site config.Site) error {
 	if !site.IsEnabled() {
 		return nil
 	}
@@ -387,7 +387,7 @@ func RunSite(ctx context.Context, settings config.Settings, site config.Site) er
 // RunMany runs audits for many sites with a parallelism cap.
 // Errors per site are returned in a map keyed by site name. errLocked is
 // surfaced as a skip (not a failure).
-func RunMany(ctx context.Context, settings config.Settings, sites []config.Site) map[string]error {
+func RunMany(ctx context.Context, settings config.Resolved, sites []config.Site) map[string]error {
 	parallel := settings.ParallelAudits
 	if parallel < 1 {
 		parallel = 1

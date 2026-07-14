@@ -34,7 +34,10 @@ func TestRefreshAll_RespectsParallelAudits(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	cfg := &config.File{
-		Settings: config.Settings{ParallelAudits: parallel, ComposerBin: "composer"},
+		Settings: config.Settings{
+			ParallelAudits: config.Ptr(parallel),
+			ComposerBin:    config.Ptr("composer"),
+		},
 	}
 	for i := 0; i < nSites; i++ {
 		cfg.Sites = append(cfg.Sites, config.Site{
@@ -82,7 +85,7 @@ func TestRefreshAll_RespectsParallelAudits(t *testing.T) {
 func TestNewModel_SemaphoreFloor(t *testing.T) {
 	// An unset/zero parallel_audits must not produce a zero-capacity channel:
 	// that would deadlock every refresh forever.
-	m := newModel(&config.File{Settings: config.Settings{ParallelAudits: 0}})
+	m := newModel(&config.File{Settings: config.Settings{ParallelAudits: config.Ptr(0)}})
 	if cap(m.refreshSem) < 1 {
 		t.Fatalf("refreshSem cap = %d, want >= 1", cap(m.refreshSem))
 	}

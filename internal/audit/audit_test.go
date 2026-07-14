@@ -219,7 +219,7 @@ func TestRunSite_TimeoutReleasesLock(t *testing.T) {
 	siteDir := t.TempDir()
 	site := config.Site{Name: "slow", Path: siteDir, Type: types.TypeComposer}
 
-	if err := RunSite(context.Background(), config.Settings{ComposerBin: "composer"}, site); err != nil {
+	if err := RunSite(context.Background(), config.Resolved{ComposerBin: "composer"}, site); err != nil {
 		t.Fatalf("RunSite: %v", err)
 	}
 

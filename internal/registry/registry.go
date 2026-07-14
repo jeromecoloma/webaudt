@@ -113,18 +113,19 @@ func Resolve(cfg *config.File, opts AddOptions) (*Resolution, error) {
 	}
 	name = cfg.UniqueName(name)
 
+	defaults := cfg.Settings.Resolve()
 	composerBin := opts.ComposerBin
 	npmBin := opts.NPMBin
 	if (siteType == types.TypeComposer || siteType == types.TypeBoth) && composerBin == "" {
 		composerBin = detectComposerBin(composerPath)
 		if composerBin == "" {
-			composerBin = cfg.Settings.ComposerBin
+			composerBin = defaults.ComposerBin
 		}
 	}
 	if (siteType == types.TypeNPM || siteType == types.TypeBoth) && npmBin == "" {
 		npmBin = detectNpmBin(npmPath)
 		if npmBin == "" {
-			npmBin = cfg.Settings.NPMBin
+			npmBin = defaults.NPMBin
 		}
 	}
 
@@ -142,8 +143,8 @@ func Resolve(cfg *config.File, opts AddOptions) (*Resolution, error) {
 		ComposerBin:     composerBin,
 		NPMBin:          npmBin,
 		NVMRC:           nvmrc,
-		DefaultComposer: cfg.Settings.ComposerBin,
-		DefaultNPM:      cfg.Settings.NPMBin,
+		DefaultComposer: defaults.ComposerBin,
+		DefaultNPM:      defaults.NPMBin,
 	}, nil
 }
 

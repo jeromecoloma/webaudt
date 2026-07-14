@@ -46,7 +46,7 @@ func Run() error {
 	if err != nil {
 		return err
 	}
-	ui.SetNerdFonts(cfg.Settings.NerdFonts)
+	ui.SetNerdFonts(cfg.Settings.Resolve().NerdFonts)
 	m := newModel(cfg)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err = p.Run()
@@ -117,7 +117,7 @@ type siteRow struct {
 }
 
 func newModel(cfg *config.File) *model {
-	parallel := cfg.Settings.ParallelAudits
+	parallel := cfg.Settings.Resolve().ParallelAudits
 	if parallel < 1 {
 		parallel = 1
 	}
@@ -1490,7 +1490,7 @@ func (m *model) startRefresh(site config.Site) tea.Cmd {
 		// they wait, which is the honest signal: they are pending, not idle.
 		sem <- struct{}{}
 		defer func() { <-sem }()
-		err := audit.RunSite(context.Background(), cfg.Settings, site)
+		err := audit.RunSite(context.Background(), cfg.Settings.Resolve(), site)
 		return refreshDoneMsg{name: site.Name, err: err}
 	}
 }
