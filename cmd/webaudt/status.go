@@ -102,13 +102,21 @@ func renderStatusCard(s config.Site, entry *cache.Entry) string {
 		statusLine,
 	)
 	if entry != nil {
+		// Ordered slice, not a map: ranging a map gave composer/npm in a random
+		// order, so the card's columns jumped around between runs.
 		breakdown := ""
-		for label, eco := range map[string]cache.Ecosystem{"composer": entry.Composer, "npm": entry.NPM} {
-			switch eco.Status {
+		for _, p := range []struct {
+			label string
+			eco   cache.Ecosystem
+		}{
+			{"composer", entry.Composer},
+			{"npm", entry.NPM},
+		} {
+			switch p.eco.Status {
 			case types.StatusOK:
-				breakdown += ui.Dim(label+":") + " " + ui.CountsSummaryLong(eco.Counts) + "   "
+				breakdown += ui.Dim(p.label+":") + " " + ui.CountsSummaryLong(p.eco.Counts) + "   "
 			case types.StatusErrored:
-				breakdown += ui.Dim(label+":") + " " + ui.SeverityBadge(types.SevError) + "   "
+				breakdown += ui.Dim(p.label+":") + " " + ui.SeverityBadge(types.SevError) + "   "
 			}
 		}
 		if breakdown != "" {
