@@ -60,6 +60,7 @@ type model struct {
 	focus               int
 	width, height       int
 	refreshing          map[string]bool
+	refreshSem          chan struct{} // caps in-flight audits at settings.parallel_audits
 	statusMsg           string
 	statusSetAt         time.Time
 	previewContent      string // raw, unwrapped — viewport handles the wrap+scroll
@@ -116,9 +117,14 @@ type siteRow struct {
 }
 
 func newModel(cfg *config.File) *model {
+	parallel := cfg.Settings.ParallelAudits
+	if parallel < 1 {
+		parallel = 1
+	}
 	m := &model{
 		cfg:        cfg,
 		refreshing: map[string]bool{},
+		refreshSem: make(chan struct{}, parallel),
 		focus:      paneSidebar,
 		bottomOpen: true,
 	}
@@ -1463,6 +1469,9 @@ func (m *model) refreshCurrent() tea.Cmd {
 	return m.startRefresh(m.sites[m.cursor].site)
 }
 
+// refreshAll queues every site. tea.Batch starts all the Cmds at once, so the
+// concurrency cap lives in startRefresh's semaphore, not here — every row still
+// shows its spinner immediately and reports its own refreshDoneMsg.
 func (m *model) refreshAll() tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(m.sites))
 	for _, row := range m.sites {
@@ -1475,7 +1484,12 @@ func (m *model) startRefresh(site config.Site) tea.Cmd {
 	m.refreshing[site.Name] = true
 	m.setStatus("refreshing " + site.Name)
 	cfg := m.cfg
+	sem := m.refreshSem
 	return func() tea.Msg {
+		// Block until a slot frees up. Queued sites keep their spinner while
+		// they wait, which is the honest signal: they are pending, not idle.
+		sem <- struct{}{}
+		defer func() { <-sem }()
 		err := audit.RunSite(context.Background(), cfg.Settings, site)
 		return refreshDoneMsg{name: site.Name, err: err}
 	}
