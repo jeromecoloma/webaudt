@@ -1,11 +1,15 @@
 package audit
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jeromecoloma/webaudt/internal/cache"
+	"github.com/jeromecoloma/webaudt/internal/config"
 	"github.com/jeromecoloma/webaudt/internal/types"
 )
 
@@ -140,5 +144,98 @@ func TestNormSeverity(t *testing.T) {
 		if got := normSeverity(c.in); got != c.want {
 			t.Errorf("normSeverity(%v) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// fakeBin writes an executable shell script named `name` into a fresh temp dir,
+// prepends that dir to PATH, and returns the script's path.
+func fakeBin(t *testing.T, name, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return p
+}
+
+// shrinkTimeout swaps auditTimeout (and its companion WaitDelay) for the
+// duration of one test, so a timeout case costs milliseconds instead of 120s.
+func shrinkTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	prevTimeout, prevDelay := auditTimeout, auditWaitDelay
+	auditTimeout, auditWaitDelay = d, d
+	t.Cleanup(func() { auditTimeout, auditWaitDelay = prevTimeout, prevDelay })
+}
+
+func TestRunComposer_Timeout(t *testing.T) {
+	fakeBin(t, "composer", "sleep 30")
+	shrinkTimeout(t, 150*time.Millisecond)
+
+	start := time.Now()
+	eco := RunComposer(context.Background(), t.TempDir(), "composer")
+	elapsed := time.Since(start)
+
+	if eco.Status != types.StatusErrored {
+		t.Fatalf("status = %q, want %q", eco.Status, types.StatusErrored)
+	}
+	if !strings.Contains(eco.Error, "timed out") {
+		t.Errorf("error = %q, want it to mention the timeout", eco.Error)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("took %s — the subprocess was not killed at the deadline", elapsed)
+	}
+}
+
+func TestRunNpm_Timeout(t *testing.T) {
+	fakeBin(t, "npm", "sleep 30")
+	shrinkTimeout(t, 150*time.Millisecond)
+
+	start := time.Now()
+	eco := RunNpm(context.Background(), t.TempDir(), "npm")
+	elapsed := time.Since(start)
+
+	if eco.Status != types.StatusErrored {
+		t.Fatalf("status = %q, want %q", eco.Status, types.StatusErrored)
+	}
+	if !strings.Contains(eco.Error, "timed out") {
+		t.Errorf("error = %q, want it to mention the timeout", eco.Error)
+	}
+	// Regression: a grandchild holding the stdout pipe open used to block Run
+	// for the full `sleep`, long past the deadline. WaitDelay bounds that.
+	if elapsed > 5*time.Second {
+		t.Errorf("took %s — Run blocked past the deadline draining pipes", elapsed)
+	}
+}
+
+// A timed-out audit must still release the per-site lock, or the site is
+// permanently unrefreshable until the lock file is removed by hand.
+func TestRunSite_TimeoutReleasesLock(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	fakeBin(t, "composer", "sleep 30")
+	shrinkTimeout(t, 150*time.Millisecond)
+
+	siteDir := t.TempDir()
+	site := config.Site{Name: "slow", Path: siteDir, Type: types.TypeComposer}
+
+	if err := RunSite(context.Background(), config.Settings{ComposerBin: "composer"}, site); err != nil {
+		t.Fatalf("RunSite: %v", err)
+	}
+
+	if !cache.AcquireLock(siteDir) {
+		t.Fatal("lock still held after a timed-out audit")
+	}
+	cache.ReleaseLock(siteDir)
+
+	entry, err := cache.Read(siteDir)
+	if err != nil {
+		t.Fatalf("cache.Read: %v", err)
+	}
+	if entry.Composer.Status != types.StatusErrored {
+		t.Errorf("cached composer status = %q, want %q", entry.Composer.Status, types.StatusErrored)
+	}
+	if !strings.Contains(entry.Composer.Error, "timed out") {
+		t.Errorf("cached error = %q, want it to mention the timeout", entry.Composer.Error)
 	}
 }

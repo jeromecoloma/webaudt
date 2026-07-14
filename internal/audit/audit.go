@@ -244,6 +244,17 @@ func naBlock() cache.Ecosystem {
 	return cache.Ecosystem{Status: types.StatusNotApplicable}
 }
 
+// auditTimeout bounds a single ecosystem audit subprocess. A hung `composer
+// audit` or `npm audit` (network stall, prompt on stdin) would otherwise pin the
+// site lock forever. Overridden in tests.
+var auditTimeout = 120 * time.Second
+
+// auditWaitDelay bounds how long we wait for output pipes to drain after the
+// deadline kills the process. Without it, a grandchild that inherited stdout
+// (composer/npm shelling out further) keeps the pipe open and Run blocks past
+// the timeout — defeating it. Overridden in tests.
+var auditWaitDelay = 5 * time.Second
+
 // RunComposer executes `composer audit` in cpath and returns a normalized Ecosystem.
 // Errors are returned as Ecosystem{Status:error}, not as Go errors.
 // `bin` may include leading args (e.g. "/usr/bin/php7.4 /home/deploy/bin/composer")
@@ -253,15 +264,21 @@ func RunComposer(ctx context.Context, cpath, bin string) cache.Ecosystem {
 	if err != nil {
 		return errBlock(cpath, fmt.Sprintf("composer binary not found: %s", bin))
 	}
+	ctx, cancel := context.WithTimeout(ctx, auditTimeout)
+	defer cancel()
 	args := append(prefix, "audit", "--format=json", "--no-interaction", "--locked")
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = cpath
+	cmd.WaitDelay = auditWaitDelay
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	// composer audit exits non-zero when advisories exist — that's not a failure.
 	_ = cmd.Run()
 
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return errBlock(cpath, fmt.Sprintf("composer audit timed out after %s", auditTimeout))
+	}
 	if !json.Valid(stdout.Bytes()) {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
@@ -282,14 +299,20 @@ func RunNpm(ctx context.Context, npath, bin string) cache.Ecosystem {
 	if err != nil {
 		return errBlock(npath, fmt.Sprintf("npm binary not found: %s", bin))
 	}
+	ctx, cancel := context.WithTimeout(ctx, auditTimeout)
+	defer cancel()
 	args := append(prefix, "audit", "--json", "--audit-level=info")
 	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.Dir = npath
+	cmd.WaitDelay = auditWaitDelay
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	_ = cmd.Run()
 
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return errBlock(npath, fmt.Sprintf("npm audit timed out after %s", auditTimeout))
+	}
 	if !json.Valid(stdout.Bytes()) {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
