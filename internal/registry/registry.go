@@ -350,6 +350,13 @@ func GitBranch(site config.Site) string {
 			if !fi.IsDir() {
 				if data, err := os.ReadFile(gitDir); err == nil {
 					if p := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(data)), "gitdir:")); p != "" {
+						// git writes this path relative to the working tree for
+						// submodules ("gitdir: ../.git/modules/x") and often for
+						// linked worktrees. Resolving it against the process CWD
+						// would read the wrong HEAD, or none at all.
+						if !filepath.IsAbs(p) {
+							p = filepath.Join(dir, p)
+						}
 						gitDir = p
 					}
 				}
