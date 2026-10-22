@@ -283,3 +283,127 @@ func TestResolve_Rejects(t *testing.T) {
 		}
 	})
 }
+
+func TestDetectLaravel(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string
+		want  *Detected
+	}{
+		{
+			name: "lock wins over manifest",
+			files: map[string]string{
+				"composer.json": `{"require":{"laravel/framework":"^12.0"}}`,
+				"composer.lock": `{"packages":[{"name":"laravel/framework","version":"v12.33.0"}]}`,
+			},
+			want: &Detected{Version: "12.33.0", Source: "composer.lock"},
+		},
+		{
+			name:  "manifest constraint without a lock",
+			files: map[string]string{"composer.json": `{"require":{"laravel/framework":"^11.0"}}`},
+			want:  &Detected{Version: "^11.0", Source: "composer.json require"},
+		},
+		{
+			name:  "not a laravel app",
+			files: map[string]string{"composer.json": `{"require":{"php":"^8.2"}}`},
+			want:  nil,
+		},
+		{
+			name:  "unreadable lock falls back to manifest",
+			files: map[string]string{"composer.json": `{"require":{"laravel/framework":"^10.0"}}`, "composer.lock": `{not json`},
+			want:  &Detected{Version: "^10.0", Source: "composer.json require"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, body := range c.files {
+				writeFile(t, filepath.Join(dir, name), body)
+			}
+			got := DetectLaravel(config.Site{Path: dir, Type: types.TypeComposer})
+			assertDetected(t, got, c.want)
+		})
+	}
+}
+
+func TestDetectLaravel_NpmOnlySite(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "composer.lock"), `{"packages":[{"name":"laravel/framework","version":"v12.0.0"}]}`)
+	if got := DetectLaravel(config.Site{Path: dir, Type: types.TypeNPM}); got != nil {
+		t.Errorf("npm-only site = %+v, want nil", got)
+	}
+}
+
+func TestDetectPHP(t *testing.T) {
+	manifest := `{"require":{"php":"^8.2"},"config":{"platform":{"php":"8.3.12"}}}`
+	cases := []struct {
+		name       string
+		manifest   string
+		siteBin    string
+		defaultBin string
+		want       *Detected
+	}{
+		{"versioned php in site composer_bin", manifest, "/usr/bin/php7.4 /home/deploy/bin/composer", "composer", &Detected{Version: "7.4", Source: "composer_bin"}},
+		{"versioned php in default composer_bin", manifest, "", "/usr/bin/php8.1 /usr/local/bin/composer", &Detected{Version: "8.1", Source: "composer_bin"}},
+		{"hyphenated php binary", manifest, "/opt/php-8.2/bin/php-8.2 composer", "composer", &Detected{Version: "8.2", Source: "composer_bin"}},
+		{"unversioned bin falls back to platform", manifest, "/usr/bin/composer", "composer", &Detected{Version: "8.3.12", Source: "composer.json platform"}},
+		{"require constraint when no platform", `{"require":{"php":"^8.2"}}`, "", "composer", &Detected{Version: "^8.2", Source: "composer.json require"}},
+		{"nothing declared", `{"require":{}}`, "", "composer", nil},
+		{"composer path named php is not a version", `{}`, "/home/php/bin/composer", "composer", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "composer.json"), c.manifest)
+			site := config.Site{Path: dir, Type: types.TypeBoth, ComposerBin: c.siteBin}
+			assertDetected(t, DetectPHP(site, c.defaultBin), c.want)
+		})
+	}
+}
+
+func TestDetectPHP_NoComposerProject(t *testing.T) {
+	site := config.Site{Path: t.TempDir(), Type: types.TypeComposer, ComposerBin: "/usr/bin/php7.4 composer"}
+	if got := DetectPHP(site, "composer"); got != nil {
+		t.Errorf("site without composer.json = %+v, want nil", got)
+	}
+}
+
+func TestDetectNode(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string
+		want  *Detected
+	}{
+		{"nvmrc wins", map[string]string{".nvmrc": "20\n", ".node-version": "18", "package.json": `{"engines":{"node":">=16"}}`}, &Detected{Version: "20", Source: ".nvmrc"}},
+		{"node-version", map[string]string{".node-version": "v18.19.0\n", "package.json": `{}`}, &Detected{Version: "v18.19.0", Source: ".node-version"}},
+		{"volta before engines", map[string]string{"package.json": `{"volta":{"node":"22.1.0"},"engines":{"node":">=20"}}`}, &Detected{Version: "22.1.0", Source: "package.json volta"}},
+		{"engines", map[string]string{"package.json": `{"engines":{"node":">=20"}}`}, &Detected{Version: ">=20", Source: "package.json engines"}},
+		{"blank nvmrc falls through", map[string]string{".nvmrc": "\n", "package.json": `{"engines":{"node":"^18"}}`}, &Detected{Version: "^18", Source: "package.json engines"}},
+		{"nothing pinned", map[string]string{"package.json": `{"name":"x"}`}, nil},
+		{"no package.json", map[string]string{}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, body := range c.files {
+				writeFile(t, filepath.Join(dir, name), body)
+			}
+			assertDetected(t, DetectNode(config.Site{Path: dir, Type: types.TypeBoth}), c.want)
+			if c.want != nil && NodeVersion(config.Site{Path: dir, Type: types.TypeBoth}) != c.want.Version {
+				t.Errorf("NodeVersion disagrees with DetectNode")
+			}
+		})
+	}
+}
+
+func assertDetected(t *testing.T, got, want *Detected) {
+	t.Helper()
+	switch {
+	case want == nil && got != nil:
+		t.Errorf("got %+v, want nil", *got)
+	case want != nil && got == nil:
+		t.Errorf("got nil, want %+v", *want)
+	case want != nil && *got != *want:
+		t.Errorf("got %+v, want %+v", *got, *want)
+	}
+}

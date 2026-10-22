@@ -9,6 +9,7 @@ import (
 
 	"github.com/jeromecoloma/webaudt/internal/cache"
 	"github.com/jeromecoloma/webaudt/internal/config"
+	"github.com/jeromecoloma/webaudt/internal/registry"
 	"github.com/jeromecoloma/webaudt/internal/types"
 	"github.com/jeromecoloma/webaudt/internal/ui"
 )
@@ -31,7 +32,8 @@ func newStatusCmd() *cobra.Command {
 
 			worst := types.SevClean
 			matched := 0
-			var jsonOut []*cache.Entry
+			jsonOut := []statusJSON{}
+			composerBin := cfg.Settings.Resolve().ComposerBin
 
 			cards := []string{}
 			for _, s := range cfg.Sites {
@@ -48,7 +50,7 @@ func newStatusCmd() *cobra.Command {
 				}
 				if asJSON {
 					if entry != nil {
-						jsonOut = append(jsonOut, entry)
+						jsonOut = append(jsonOut, statusJSON{Entry: entry, Versions: detectVersions(s, composerBin)})
 					}
 					continue
 				}
@@ -87,6 +89,33 @@ func newStatusCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit JSON instead of plain text")
 	return cmd
+}
+
+// statusJSON is one site in `status --json`: the cached audit entry, flattened,
+// plus the versions found in the project's files at the time of the call.
+type statusJSON struct {
+	*cache.Entry
+	Versions siteVersions `json:"versions"`
+}
+
+// siteVersions holds each detected version, or null when it was not found.
+type siteVersions struct {
+	Laravel *registry.Detected `json:"laravel"`
+	PHP     *registry.Detected `json:"php"`
+	Node    *registry.Detected `json:"node"`
+	Branch  *string            `json:"branch"`
+}
+
+func detectVersions(s config.Site, composerBin string) siteVersions {
+	v := siteVersions{
+		Laravel: registry.DetectLaravel(s),
+		PHP:     registry.DetectPHP(s, composerBin),
+		Node:    registry.DetectNode(s),
+	}
+	if b := registry.GitBranch(s); b != "" {
+		v.Branch = &b
+	}
+	return v
 }
 
 func renderStatusCard(s config.Site, entry *cache.Entry) string {

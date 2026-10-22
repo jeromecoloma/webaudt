@@ -106,7 +106,8 @@ composer_bin = "/home/user/Sites/mysite.com/bin/composer"
 
 The detail pane shows the current git branch (when the site path is a git
 working tree), the project's Laravel version (from `composer.lock`, falling
-back to the `composer.json` constraint) and Node version (from `.nvmrc`) when
+back to the `composer.json` constraint) and Node version (from `.nvmrc`,
+`.node-version`, then `volta.node` or `engines.node` in `package.json`) when
 present. Set `nerd_fonts = true` — or `WEBAUDT_NERD_FONTS=1`,
 which overrides the config — to prefix those lines and the composer/npm
 ecosystem headers with devicons. Requires a [Nerd Font](https://www.nerdfonts.com/)
@@ -137,6 +138,33 @@ two tabs:
 
 Press `b` to hide/show it; `t` opens it (when closed) or cycles between
 tabs (when open).
+
+## `status --json`
+
+Prints an array with one object per audited site (sites never checked are left
+out). Each object is the cached audit result (`name`, `path`, `checked_at`,
+`composer`, `npm`, ...) plus a `versions` block read from the project's files
+when the command runs:
+
+```json
+"versions": {
+  "laravel": { "version": "12.33.0", "source": "composer.lock" },
+  "php":     { "version": "7.4", "source": "composer_bin" },
+  "node":    { "version": "20", "source": ".nvmrc" },
+  "branch":  "main"
+}
+```
+
+Anything not found is `null`. Sources, in the order they are tried:
+
+- `laravel`: `composer.lock`, then `composer.json require` (a constraint)
+- `php`: `composer_bin` (a versioned PHP binary in the site's composer command,
+  e.g. `/usr/bin/php7.4 composer`), then `composer.json platform`
+  (`config.platform.php`), then `composer.json require` (a constraint)
+- `node`: `.nvmrc`, `.node-version`, `package.json volta`, `package.json engines`
+
+The exit code follows the table below, so a non-zero exit still comes with
+valid JSON on stdout.
 
 ## Exit codes (`webaudt status` / `refresh`)
 

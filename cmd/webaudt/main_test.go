@@ -277,6 +277,64 @@ func TestStatus_JSONShape(t *testing.T) {
 	}
 }
 
+// --json carries the versions found in the site's files, each with its source,
+// and null for anything not found.
+func TestStatus_JSONVersions(t *testing.T) {
+	e := newEnv(t)
+	writeSiteFile(t, e.siteDir, "composer.json", `{"require":{"php":"^8.2","laravel/framework":"^12.0"}}`)
+	writeSiteFile(t, e.siteDir, "composer.lock", `{"packages":[{"name":"laravel/framework","version":"v12.33.0"}]}`)
+	e.seed(t, okEco(cache.Counts{}))
+
+	out, code := e.run(t, "status", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	var entries []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &entries); err != nil || len(entries) != 1 {
+		t.Fatalf("want one entry, got err=%v\n%s", err, out)
+	}
+	if _, ok := entries[0]["schema_version"]; !ok {
+		t.Error("cache entry fields must stay at the top level")
+	}
+	var v struct {
+		Laravel *struct{ Version, Source string } `json:"laravel"`
+		PHP     *struct{ Version, Source string } `json:"php"`
+		Node    *struct{ Version, Source string } `json:"node"`
+		Branch  *string                           `json:"branch"`
+	}
+	raw, ok := entries[0]["versions"]
+	if !ok {
+		t.Fatalf("versions missing:\n%s", out)
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	if v.Laravel == nil || v.Laravel.Version != "12.33.0" || v.Laravel.Source != "composer.lock" {
+		t.Errorf("laravel = %+v", v.Laravel)
+	}
+	if v.PHP == nil || v.PHP.Version != "^8.2" || v.PHP.Source != "composer.json require" {
+		t.Errorf("php = %+v", v.PHP)
+	}
+	if v.Node != nil {
+		t.Errorf("node = %+v, want null for a composer-only site", v.Node)
+	}
+	if v.Branch != nil {
+		t.Errorf("branch = %q, want null outside a git repo", *v.Branch)
+	}
+	for _, key := range []string{`"node": null`, `"branch": null`} {
+		if !strings.Contains(string(raw), key) {
+			t.Errorf("versions should spell out %s, got %s", key, raw)
+		}
+	}
+}
+
+func writeSiteFile(t *testing.T, dir, name, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A site that was never audited contributes no entry to the JSON array — the
 // array is present and empty rather than null-ish garbage.
 func TestStatus_JSONNeverChecked(t *testing.T) {

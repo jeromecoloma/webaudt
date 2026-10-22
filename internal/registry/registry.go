@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/jeromecoloma/webaudt/internal/cache"
@@ -131,7 +132,7 @@ func Resolve(cfg *config.File, opts AddOptions) (*Resolution, error) {
 
 	nvmrc := ""
 	if (siteType == types.TypeNPM || siteType == types.TypeBoth) && npmPath != "" {
-		nvmrc = readNVMRC(npmPath)
+		nvmrc = readFirstLine(filepath.Join(npmPath, ".nvmrc"))
 	}
 
 	return &Resolution{
@@ -248,8 +249,8 @@ func isExec(p string) bool {
 	return fi.Mode().Perm()&0o111 != 0
 }
 
-func readNVMRC(path string) string {
-	f, err := os.Open(filepath.Join(path, ".nvmrc"))
+func readFirstLine(path string) string {
+	f, err := os.Open(path)
 	if err != nil {
 		return ""
 	}
@@ -261,39 +262,47 @@ func readNVMRC(path string) string {
 	return ""
 }
 
+// Detected is a version found in a project's files, plus the file it came
+// from, so a consumer can tell an installed version from a declared constraint.
+type Detected struct {
+	Version string `json:"version"`
+	Source  string `json:"source"`
+}
+
 // LaravelVersion returns the laravel/framework version for a composer-based
 // site, or "" if the project is not a Laravel app. It prefers the exact
 // installed version from composer.lock and falls back to the constraint in
 // composer.json.
 func LaravelVersion(site config.Site) string {
-	if site.Type != types.TypeComposer && site.Type != types.TypeBoth {
-		return ""
+	if d := DetectLaravel(site); d != nil {
+		return d.Version
 	}
-	dir := site.ComposerPath
+	return ""
+}
+
+// DetectLaravel is LaravelVersion with its source, or nil when not found.
+func DetectLaravel(site config.Site) *Detected {
+	dir := composerDir(site)
 	if dir == "" {
-		dir = detectEcosystemPath(site.Path, "composer.json")
-	}
-	if dir == "" {
-		return ""
+		return nil
 	}
 	if v := laravelFromLock(filepath.Join(dir, "composer.lock")); v != "" {
-		return v
+		return &Detected{Version: v, Source: "composer.lock"}
 	}
-	return laravelFromManifest(filepath.Join(dir, "composer.json"))
+	if v := laravelFromManifest(filepath.Join(dir, "composer.json")); v != "" {
+		return &Detected{Version: v, Source: "composer.json require"}
+	}
+	return nil
 }
 
 func laravelFromLock(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
 	var lock struct {
 		Packages []struct {
 			Name    string `json:"name"`
 			Version string `json:"version"`
 		} `json:"packages"`
 	}
-	if err := json.Unmarshal(data, &lock); err != nil {
+	if !readJSON(path, &lock) {
 		return ""
 	}
 	for _, p := range lock.Packages {
@@ -305,33 +314,128 @@ func laravelFromLock(path string) string {
 }
 
 func laravelFromManifest(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
 	var m struct {
 		Require map[string]string `json:"require"`
 	}
-	if err := json.Unmarshal(data, &m); err != nil {
+	if !readJSON(path, &m) {
 		return ""
 	}
 	return m.Require["laravel/framework"]
 }
 
-// NodeVersion returns the Node version pinned in .nvmrc for an npm-based site,
-// or "" if the project has no npm ecosystem or no .nvmrc.
+// DetectPHP returns the PHP version a composer-based site targets, or nil.
+// In order: a versioned PHP binary in the site's composer command (e.g.
+// "/usr/bin/php7.4 composer", the PHP that actually runs on this server), the
+// composer.json config.platform.php pin, then the composer.json require.php
+// constraint. defaultComposerBin is the global composer_bin setting, used when
+// the site has no override.
+func DetectPHP(site config.Site, defaultComposerBin string) *Detected {
+	dir := composerDir(site)
+	if dir == "" {
+		return nil
+	}
+	bin := site.ComposerBin
+	if bin == "" {
+		bin = defaultComposerBin
+	}
+	if v := phpFromComposerBin(bin); v != "" {
+		return &Detected{Version: v, Source: "composer_bin"}
+	}
+	var m struct {
+		Require map[string]string `json:"require"`
+		Config  struct {
+			Platform map[string]string `json:"platform"`
+		} `json:"config"`
+	}
+	if !readJSON(filepath.Join(dir, "composer.json"), &m) {
+		return nil
+	}
+	if v := strings.TrimSpace(m.Config.Platform["php"]); v != "" {
+		return &Detected{Version: v, Source: "composer.json platform"}
+	}
+	if v := strings.TrimSpace(m.Require["php"]); v != "" {
+		return &Detected{Version: v, Source: "composer.json require"}
+	}
+	return nil
+}
+
+var phpBinVersion = regexp.MustCompile(`^php-?(\d+(?:\.\d+)*)$`)
+
+// phpFromComposerBin finds a versioned php binary among the words of a
+// composer command, e.g. "7.4" from "/usr/bin/php7.4 /home/deploy/bin/composer".
+func phpFromComposerBin(bin string) string {
+	for _, word := range strings.Fields(bin) {
+		if m := phpBinVersion.FindStringSubmatch(filepath.Base(word)); m != nil {
+			return m[1]
+		}
+	}
+	return ""
+}
+
+// NodeVersion returns the Node version pinned for an npm-based site, or "" if
+// the project has no npm ecosystem or pins no version.
 func NodeVersion(site config.Site) string {
+	if d := DetectNode(site); d != nil {
+		return d.Version
+	}
+	return ""
+}
+
+// DetectNode returns the Node version an npm-based site pins, or nil. In order:
+// .nvmrc, .node-version, package.json volta.node, then package.json
+// engines.node.
+func DetectNode(site config.Site) *Detected {
 	if site.Type != types.TypeNPM && site.Type != types.TypeBoth {
-		return ""
+		return nil
 	}
 	dir := site.NPMPath
 	if dir == "" {
 		dir = detectEcosystemPath(site.Path, "package.json")
 	}
 	if dir == "" {
+		return nil
+	}
+	for _, name := range []string{".nvmrc", ".node-version"} {
+		if v := readFirstLine(filepath.Join(dir, name)); v != "" {
+			return &Detected{Version: v, Source: name}
+		}
+	}
+	var pkg struct {
+		Volta struct {
+			Node string `json:"node"`
+		} `json:"volta"`
+		Engines struct {
+			Node string `json:"node"`
+		} `json:"engines"`
+	}
+	if !readJSON(filepath.Join(dir, "package.json"), &pkg) {
+		return nil
+	}
+	if v := strings.TrimSpace(pkg.Volta.Node); v != "" {
+		return &Detected{Version: v, Source: "package.json volta"}
+	}
+	if v := strings.TrimSpace(pkg.Engines.Node); v != "" {
+		return &Detected{Version: v, Source: "package.json engines"}
+	}
+	return nil
+}
+
+func composerDir(site config.Site) string {
+	if site.Type != types.TypeComposer && site.Type != types.TypeBoth {
 		return ""
 	}
-	return readNVMRC(dir)
+	if site.ComposerPath != "" {
+		return site.ComposerPath
+	}
+	return detectEcosystemPath(site.Path, "composer.json")
+}
+
+func readJSON(path string, v any) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(data, v) == nil
 }
 
 // GitBranch returns the current branch name for the git repo at the site path,
