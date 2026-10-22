@@ -46,9 +46,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # Match go.mod, not 'stable': golangci-lint can only type-check code for
+      # Go versions up to the one it was built with, so a newer runner Go
+      # breaks the pinned linter.
       - uses: actions/setup-go@v6
         with:
-          go-version: 'stable'
+          go-version-file: go.mod
           cache: true
       - uses: golangci/golangci-lint-action@v8
         with:
