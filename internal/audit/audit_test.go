@@ -30,7 +30,7 @@ func readFixture(t *testing.T, name string) []byte {
 }
 
 func TestParseComposer_Clean(t *testing.T) {
-	eco, err := ParseComposer(readFixture(t, "composer-audit-clean.json"), "/site")
+	eco, err := ParseComposer(readFixture(t, "composer-audit-clean.json"), "/site", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestParseComposer_Clean(t *testing.T) {
 }
 
 func TestParseComposer_Vulns(t *testing.T) {
-	eco, err := ParseComposer(readFixture(t, "composer-audit-vulns.json"), "/site")
+	eco, err := ParseComposer(readFixture(t, "composer-audit-vulns.json"), "/site", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestParseComposer_Vulns(t *testing.T) {
 
 func TestParseComposer_NullSeverity(t *testing.T) {
 	raw := []byte(`{"advisories":{"v/x":[{"advisoryId":"A","cve":"CVE-1","title":"t","affectedVersions":"*","severity":null}]}}`)
-	eco, err := ParseComposer(raw, "/x")
+	eco, err := ParseComposer(raw, "/x", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestParseComposer_AdvisoryCap(t *testing.T) {
 		raw = append(raw, []byte(a)...)
 	}
 	raw = append(raw, []byte(`]}}`)...)
-	eco, err := ParseComposer(raw, "/x")
+	eco, err := ParseComposer(raw, "/x", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestParseComposer_AdvisoryCap(t *testing.T) {
 }
 
 func TestParseNpm_Clean(t *testing.T) {
-	eco, err := ParseNpm(readFixture(t, "npm-audit-clean.json"), "/site/www")
+	eco, err := ParseNpm(readFixture(t, "npm-audit-clean.json"), "/site/www", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestParseNpm_Clean(t *testing.T) {
 }
 
 func TestParseNpm_Vulns(t *testing.T) {
-	eco, err := ParseNpm(readFixture(t, "npm-audit-vulns.json"), "/x")
+	eco, err := ParseNpm(readFixture(t, "npm-audit-vulns.json"), "/x", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestRunComposer_Timeout(t *testing.T) {
 	shrinkTimeout(t, 150*time.Millisecond)
 
 	start := time.Now()
-	eco := RunComposer(context.Background(), t.TempDir(), "composer")
+	eco := RunComposer(context.Background(), t.TempDir(), "composer", nil)
 	elapsed := time.Since(start)
 
 	if eco.Status != types.StatusErrored {
@@ -194,7 +194,7 @@ func TestRunNpm_Timeout(t *testing.T) {
 	shrinkTimeout(t, 150*time.Millisecond)
 
 	start := time.Now()
-	eco := RunNpm(context.Background(), t.TempDir(), "npm")
+	eco := RunNpm(context.Background(), t.TempDir(), "npm", nil)
 	elapsed := time.Since(start)
 
 	if eco.Status != types.StatusErrored {

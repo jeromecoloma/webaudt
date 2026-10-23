@@ -79,6 +79,7 @@ func selectRefreshTargets(cfg *config.File, names []string, all bool) []config.S
 // refreshExitCode returns the severity-based exit code for the post-refresh state.
 func refreshExitCode(cfg *config.File, targets []config.Site) int {
 	worst := types.SevClean
+	failed := false
 	for _, s := range targets {
 		e, err := cache.Read(s.Path)
 		if err != nil {
@@ -88,6 +89,7 @@ func refreshExitCode(cfg *config.File, targets []config.Site) int {
 		if types.SeverityRank(w) > types.SeverityRank(worst) {
 			worst = w
 		}
+		failed = failed || e.Failed()
 	}
-	return severityToExitCode(worst)
+	return exitCode(worst, failed)
 }

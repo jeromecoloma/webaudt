@@ -62,6 +62,21 @@ type Advisory struct {
 	Severity string `json:"severity"`
 	Title    string `json:"title"`
 	Affected string `json:"affected"`
+	// Links points at the advisory pages. composer gives one per advisory; an
+	// npm entry covers every advisory against the package, so it can have many.
+	Links []string `json:"links,omitempty"`
+	// New is true when this advisory was not in the previous successful audit.
+	New bool `json:"new,omitempty"`
+	// Keys identify the underlying advisories for the new/fixed comparison.
+	// Only needed while the result is being built, so it is not cached.
+	Keys []string `json:"-"`
+}
+
+// Abandoned is a package its maintainers no longer support. Replacement is the
+// package composer suggests instead, empty when there is none.
+type Abandoned struct {
+	Package     string `json:"package"`
+	Replacement string `json:"replacement,omitempty"`
 }
 
 // Ecosystem is the per-ecosystem result of an audit run.
@@ -71,6 +86,20 @@ type Ecosystem struct {
 	Counts     Counts                `json:"counts,omitempty"`
 	Advisories []Advisory            `json:"advisories,omitempty"`
 	Error      string                `json:"error,omitempty"`
+	Abandoned  []Abandoned           `json:"abandoned,omitempty"`
+	// Ignored is how many advisories were dropped by the site's ignore list.
+	Ignored int `json:"ignored,omitempty"`
+	// Seen holds the key of every advisory found, ignored ones included,
+	// sorted and never capped, so the next run can tell which advisories are
+	// new and which were fixed. Ignoring an advisory does not fix it.
+	Seen []string `json:"seen,omitempty"`
+	// IgnoredKeys are the keys in Seen that the ignore list dropped. Only
+	// needed while the result is being built, so it is not cached.
+	IgnoredKeys []string `json:"-"`
+	// New and Resolved are the keys that appeared or disappeared since the
+	// previous successful audit of this ecosystem.
+	New      []string `json:"new,omitempty"`
+	Resolved []string `json:"resolved,omitempty"`
 }
 
 // Entry is the full cached audit result for one site.
@@ -100,6 +129,12 @@ func (e Entry) Worst() string {
 		}
 	}
 	return w
+}
+
+// Failed reports whether either ecosystem audit failed, which means the
+// counts are incomplete whatever else was found.
+func (e Entry) Failed() bool {
+	return e.Composer.Status == types.StatusErrored || e.NPM.Status == types.StatusErrored
 }
 
 // hash is the per-site cache key — first 8 chars of sha1(path).

@@ -76,13 +76,18 @@ webaudt refresh --all                 # re-run every audit
 webaudt status --json                 # scriptable output
 webaudt rm mysite                     # remove a site
 webaudt doctor                        # verify composer/npm installs
+webaudt config edit                   # open config.toml in your editor
 ```
 
 Run `webaudt <cmd> --help` for per-command flags.
 
 ## Configuration
 
-`~/.config/webaudt/config.toml` is created with defaults on first run.
+`~/.config/webaudt/config.toml` is created with defaults on first run. Open it
+with `webaudt config edit`, or press `e` in the TUI. The editor is `$VISUAL`,
+then `$EDITOR`, then the first of `nvim`, `vim` or `vi` found on your PATH.
+webaudt checks the file when the editor closes and tells you if it no longer
+parses; the TUI keeps using the previous config until it does.
 
 ```toml
 [settings]
@@ -102,7 +107,16 @@ npm_path = "/home/user/Sites/mysite.com/www"
 # composer_bin and npm_bin are auto-detected at `add` time and only persisted
 # when they differ from the global default. Edit freely.
 composer_bin = "/home/user/Sites/mysite.com/bin/composer"
+# Advisories you have reviewed and accepted. Matched against GHSA IDs (both
+# ecosystems), CVE and composer PKSA IDs, and npm advisory numbers.
+ignore = ["GHSA-29mw-wpgm-hmr9", "CVE-2024-12345"]
 ```
+
+Ignored advisories are left out of the counts and the exit code, and the
+number ignored is shown next to the site. An npm package that is only
+vulnerable through ignored advisories, directly or through its dependencies,
+is left out too. composer's own `config.audit.ignore` in `composer.json` also
+works.
 
 The detail pane shows the current git branch (when the site path is a git
 working tree), the project's Laravel version (from `composer.lock`, falling
@@ -124,8 +138,10 @@ in your terminal; left off by default to avoid tofu boxes.
 | `r`       | Refresh the highlighted site            |
 | `R`       | Refresh every site                      |
 | `o`       | Open selected site in a new tmux window |
+| `e`       | Edit config.toml                        |
 | `b`       | Toggle CVE overview pane                |
 | `t`       | Open / switch CVE overview tab          |
+| `4` / `5` | CVE overview: Most vulnerable / Recent scans |
 | `?`       | Show key hints                          |
 | `q` / Esc | Quit                                    |
 
@@ -137,7 +153,20 @@ two tabs:
 - **Recent scans** — sites ordered by last-checked time, newest first.
 
 Press `b` to hide/show it; `t` opens it (when closed) or cycles between
-tabs (when open).
+tabs (when open). `4` and `5` jump straight to a tab, opening the pane if needed.
+
+## What changed since the last scan
+
+Each audit is compared with the previous successful audit of the same site.
+Advisories that were not there before are marked `NEW` in the detail pane, and
+advisories that have gone are listed under "fixed since last scan". `status`
+shows the same as a count, e.g. `1 new · 2 fixed since last scan`. Nothing is
+compared after a failed audit, and adding an advisory to `ignore` does not make
+it count as fixed.
+
+The detail pane also lists each advisory's links, and composer packages whose
+maintainers have abandoned them, with the suggested replacement. Abandoned
+packages are reported but do not change the severity or the exit code.
 
 ## `status --json`
 
@@ -155,7 +184,13 @@ when the command runs:
 }
 ```
 
-Anything not found is `null`. Sources, in the order they are tried:
+Each ecosystem block also carries, when there is something to report:
+`advisories[].links` and `advisories[].new`, `new` and `resolved` (keys of the
+advisories that appeared or went since the last scan), `abandoned`
+(`package` and `replacement`), `ignored` (a count) and `seen` (every advisory
+key found, used for the next comparison).
+
+Anything not found in `versions` is `null`. Sources, in the order they are tried:
 
 - `laravel`: `composer.lock`, then `composer.json require` (a constraint)
 - `php`: `composer_bin` (a versioned PHP binary in the site's composer command,
@@ -175,6 +210,11 @@ valid JSON on stdout.
 | 2    | High                             |
 | 3    | Critical                         |
 | 10   | Audit failed                     |
+
+An audit failure wins over any severity: if one ecosystem failed, the counts
+are incomplete, so the exit code is 10 even when the other found something.
+`status --json` with a site name that is not registered fails, as `status`
+does.
 
 ## Severity buckets
 

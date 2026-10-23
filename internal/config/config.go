@@ -97,6 +97,9 @@ type Site struct {
 	NPMPath      string         `toml:"npm_path,omitempty"`
 	ComposerBin  string         `toml:"composer_bin,omitempty"`
 	NPMBin       string         `toml:"npm_bin,omitempty"`
+	// Ignore lists advisory IDs (GHSA, CVE or composer PKSA IDs) to leave out
+	// of this site's results, for advisories that have been reviewed and accepted.
+	Ignore []string `toml:"ignore,omitempty"`
 }
 
 // IsEnabled returns true unless the user explicitly set enabled=false.
@@ -192,16 +195,26 @@ func writeDefault(path string) error {
 	return os.WriteFile(path, []byte(body), 0o644)
 }
 
-// Load reads + validates config.toml. Creates a default file if missing.
-func Load() (*File, error) {
+// EnsureFile creates config.toml with defaults if it is missing and returns
+// its path. It does not parse the file, so it works on a broken config too.
+func EnsureFile() (string, error) {
 	if err := EnsureDirs(); err != nil {
-		return nil, err
+		return "", err
 	}
 	path := ConfigFile()
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		if err := writeDefault(path); err != nil {
-			return nil, fmt.Errorf("write default config: %w", err)
+			return "", fmt.Errorf("write default config: %w", err)
 		}
+	}
+	return path, nil
+}
+
+// Load reads + validates config.toml. Creates a default file if missing.
+func Load() (*File, error) {
+	path, err := EnsureFile()
+	if err != nil {
+		return nil, err
 	}
 
 	// Settings are left exactly as the user wrote them — defaults are applied at

@@ -7,10 +7,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,6 +25,7 @@ import (
 	"github.com/jeromecoloma/webaudt/internal/audit"
 	"github.com/jeromecoloma/webaudt/internal/cache"
 	"github.com/jeromecoloma/webaudt/internal/config"
+	"github.com/jeromecoloma/webaudt/internal/editor"
 	"github.com/jeromecoloma/webaudt/internal/registry"
 	"github.com/jeromecoloma/webaudt/internal/types"
 	"github.com/jeromecoloma/webaudt/internal/ui"
@@ -61,8 +65,9 @@ type model struct {
 	width, height       int
 	refreshing          map[string]bool
 	refreshSem          chan struct{} // caps in-flight audits at settings.parallel_audits
-	statusMsg           string
-	statusSetAt         time.Time
+	toast               *toast
+	refreshBatch        int    // sites queued by refresh-all, for one summary toast
+	refreshBatchFailed  int    // sites in that batch whose refresh or audit failed
 	previewContent      string // raw, unwrapped — viewport handles the wrap+scroll
 	preview             viewport.Model
 	previewReady        bool
@@ -86,9 +91,16 @@ type model struct {
 
 	// remove confirmation modal
 	removeOpen bool
+	removing   bool // removal confirmed and running
+
+	// loading is true while the site list is being read, at startup and
+	// after the config is edited.
+	loading bool
+	spinner spinner.Model
 
 	// help modal
-	helpOpen bool
+	helpOpen   bool
+	helpScroll int // first visible line when the help does not fit the screen
 
 	// error modal
 	errorOpen  bool
@@ -99,6 +111,10 @@ type model struct {
 	bottomOpen bool
 	bottomTab  int // 0 = leaderboard, 1 = recent scans
 }
+
+// firstTabKey is the number key for the first CVE overview tab. Keys 1-3
+// focus the panes, so the tabs take the next numbers.
+const firstTabKey = 4
 
 const (
 	bottomTabLeaderboard = 0
@@ -127,28 +143,82 @@ func newModel(cfg *config.File) *model {
 		refreshSem: make(chan struct{}, parallel),
 		focus:      paneSidebar,
 		bottomOpen: true,
+		loading:    true,
+		spinner:    spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("51")))),
 	}
-	m.loadSites()
 	return m
 }
 
-func (m *model) loadSites() {
-	m.sites = m.sites[:0]
-	for _, s := range m.cfg.Sites {
-		row := siteRow{site: s, worst: types.SevNever}
-		row.laravel = registry.LaravelVersion(s)
-		row.nodeVers = registry.NodeVersion(s)
-		row.branch = registry.GitBranch(s)
-		if cache.Exists(s.Path) {
-			if e, err := cache.Read(s.Path); err == nil {
-				row.entry = e
-				row.worst = e.Worst()
-			}
+// loadWorkers caps how many sites are read at once. Reading a site's versions
+// and branch takes several small file reads, which are slow on a synced
+// folder; reading sites in parallel hides most of that wait.
+const loadWorkers = 8
+
+// loadRow builds the sidebar row for one site.
+func loadRow(s config.Site) siteRow {
+	row := siteRow{site: s, worst: types.SevNever}
+	row.laravel = registry.LaravelVersion(s)
+	row.nodeVers = registry.NodeVersion(s)
+	row.branch = registry.GitBranch(s)
+	row.readEntry()
+	return row
+}
+
+// readEntry loads the site's cached audit result, if any.
+func (r *siteRow) readEntry() {
+	r.entry, r.worst = nil, types.SevNever
+	if cache.Exists(r.site.Path) {
+		if e, err := cache.Read(r.site.Path); err == nil {
+			r.entry = e
+			r.worst = e.Worst()
 		}
-		m.sites = append(m.sites, row)
 	}
-	if m.cursor >= len(m.sites) {
-		m.cursor = max(0, len(m.sites)-1)
+}
+
+// loadRows builds a row for every site, in config order.
+func loadRows(sites []config.Site) []siteRow {
+	rows := make([]siteRow, len(sites))
+	sem := make(chan struct{}, loadWorkers)
+	var wg sync.WaitGroup
+	for i, s := range sites {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			rows[i] = loadRow(s)
+		}()
+	}
+	wg.Wait()
+	return rows
+}
+
+type sitesLoadedMsg struct{ rows []siteRow }
+
+// loadSites reads the site list in the background and shows the loader
+// until it is done.
+func (m *model) loadSites() tea.Cmd {
+	m.loading = true
+	sites := slices.Clone(m.cfg.Sites)
+	return tea.Batch(m.spinner.Tick, func() tea.Msg {
+		return sitesLoadedMsg{rows: loadRows(sites)}
+	})
+}
+
+// setRows replaces the site list, keeping the cursor on the same site when
+// it is still there.
+func (m *model) setRows(rows []siteRow) {
+	var current string
+	if m.cursor < len(m.sites) {
+		current = m.sites[m.cursor].site.Name
+	}
+	m.sites = rows
+	m.cursor = min(m.cursor, max(0, len(m.sites)-1))
+	for i, row := range m.sites {
+		if row.site.Name == current {
+			m.cursor = i
+			break
+		}
 	}
 	m.rebuildPreview()
 }
@@ -167,7 +237,7 @@ func (m *model) moveSite(delta int) {
 	m.cfg.Sites[m.cursor], m.cfg.Sites[j] = m.cfg.Sites[j], m.cfg.Sites[m.cursor]
 	m.cursor = j
 	if err := m.cfg.Save(); err != nil {
-		m.setStatus("save config: " + err.Error())
+		m.notifyError("Could not save the new order: " + err.Error())
 		return
 	}
 	m.rebuildPreview()
@@ -175,16 +245,7 @@ func (m *model) moveSite(delta int) {
 
 // ---- bubbletea Model ----
 
-// statusTTL is how long a transient status message lingers before auto-clearing.
-const statusTTL = 4 * time.Second
-
-func (m *model) Init() tea.Cmd { return statusTick() }
-
-// setStatus sets a transient status message and stamps it so the ticker can expire it.
-func (m *model) setStatus(s string) {
-	m.statusMsg = s
-	m.statusSetAt = time.Now()
-}
+func (m *model) Init() tea.Cmd { return tea.Batch(statusTick(), m.loadSites()) }
 
 type statusTickMsg struct{}
 
@@ -197,6 +258,15 @@ type refreshDoneMsg struct {
 	err  error
 }
 
+type removeDoneMsg struct {
+	name string
+	cfg  *config.File
+	err  error
+}
+
+// configEditedMsg arrives when the editor opened by `e` exits.
+type configEditedMsg struct{ err error }
+
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -206,20 +276,69 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case statusTickMsg:
-		if m.statusMsg != "" && time.Since(m.statusSetAt) >= statusTTL {
-			m.statusMsg = ""
-		}
+		m.expireToast(time.Now())
 		return m, statusTick()
+
+	case spinner.TickMsg:
+		// Stop ticking once nothing is waiting, or the spinner keeps the
+		// program redrawing forever.
+		if !m.loading && !m.removing {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+
+	case sitesLoadedMsg:
+		m.loading = false
+		m.setRows(msg.rows)
+		return m, nil
+
+	case removeDoneMsg:
+		m.removing = false
+		m.removeOpen = false
+		if msg.err != nil {
+			m.notifyError("Could not remove " + msg.name + ": " + msg.err.Error())
+			return m, nil
+		}
+		m.cfg = msg.cfg
+		m.setRows(slices.DeleteFunc(slices.Clone(m.sites), func(r siteRow) bool { return r.site.Name == msg.name }))
+		m.notifySuccess("Removed " + msg.name)
+		return m, nil
 
 	case refreshDoneMsg:
 		delete(m.refreshing, msg.name)
-		m.loadSites()
-		if msg.err != nil {
-			m.setStatus("refresh " + msg.name + ": " + msg.err.Error())
-		} else {
-			m.setStatus("refreshed " + msg.name)
+		// Only this site's audit result changed, so re-read just that.
+		for i := range m.sites {
+			if m.sites[i].site.Name == msg.name {
+				m.sites[i].readEntry()
+			}
+		}
+		m.rebuildPreview()
+		switch {
+		case m.refreshBatch > 0:
+			// Refresh-all: one toast when the last site finishes, not one per site.
+			if msg.err != nil || m.auditFailed(msg.name) {
+				m.refreshBatchFailed++
+			}
+			if len(m.refreshing) == 0 {
+				text := fmt.Sprintf("Refreshed %d %s", m.refreshBatch, "site"+plural(m.refreshBatch))
+				if m.refreshBatchFailed > 0 {
+					m.notifyError(fmt.Sprintf("%s · %d failed", text, m.refreshBatchFailed))
+				} else {
+					m.notifySuccess(text)
+				}
+				m.refreshBatch, m.refreshBatchFailed = 0, 0
+			}
+		case msg.err != nil:
+			m.notifyError("Could not refresh " + msg.name + ": " + msg.err.Error())
+		default:
+			m.notifyRefreshed(msg.name)
 		}
 		return m, nil
+
+	case configEditedMsg:
+		return m, m.reloadConfig(msg.err)
 
 	case tea.MouseMsg:
 		if m.filterOpen || m.addOpen || m.removeOpen || m.helpOpen || m.errorOpen {
@@ -243,6 +362,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "esc", "q", "?", "enter":
 				m.helpOpen = false
+			case "j", "down":
+				m.helpScroll = min(m.helpScroll+1, m.helpMaxScroll())
+			case "k", "up":
+				m.helpScroll = max(m.helpScroll-1, 0)
 			}
 			return m, nil
 		}
@@ -250,6 +373,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "esc", "q", "enter":
 				m.errorOpen = false
+			}
+			return m, nil
+		}
+		if m.loading {
+			switch msg.String() {
+			case "ctrl+c", "q", "esc":
+				return m, tea.Quit
 			}
 			return m, nil
 		}
@@ -267,7 +397,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "d", "delete":
 			if len(m.sites) > 0 {
 				m.removeOpen = true
-				m.statusMsg = ""
 			}
 			return m, nil
 		case "1":
@@ -285,7 +414,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "?":
 			m.helpOpen = true
-			m.statusMsg = ""
+			m.helpScroll = 0
 			return m, nil
 		case "r":
 			return m, m.refreshCurrent()
@@ -294,6 +423,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "o":
 			m.openInTmuxWindow()
 			return m, nil
+		case "e":
+			return m, m.editConfig()
 		case "b":
 			m.bottomOpen = !m.bottomOpen
 			if !m.bottomOpen && m.focus == paneBottom {
@@ -305,6 +436,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.bottomOpen {
 				m.focus = paneBottom
 			}
+			return m, nil
+		case "4", "5":
+			m.bottomTab = int(msg.String()[0]-'0') - firstTabKey
+			if !m.bottomOpen {
+				m.bottomOpen = true
+				m.resizePreview()
+			}
+			m.focus = paneBottom
 			return m, nil
 		case "t":
 			if !m.bottomOpen {
@@ -372,7 +511,7 @@ func (m *model) View() string {
 	}
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, rightCol)
-	modalOpen := m.filterOpen || m.addOpen || m.removeOpen || m.helpOpen || m.errorOpen
+	modalOpen := m.loading || m.filterOpen || m.addOpen || m.removeOpen || m.helpOpen || m.errorOpen
 	if modalOpen {
 		body = dimBackground(body)
 	}
@@ -390,6 +529,11 @@ func (m *model) View() string {
 	}
 	if m.errorOpen {
 		body = overlayCenter(body, m.renderErrorModal())
+	} else if m.loading {
+		body = overlayCenter(body, m.renderLoadingModal())
+	}
+	if m.toast != nil {
+		body = overlayTopRight(body, m.toast.render())
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, body, footer)
 }
@@ -546,7 +690,7 @@ func (m *model) openInTmuxWindow() {
 		m.errorOpen = true
 		return
 	}
-	m.setStatus("opened " + row.site.Name + " in new tmux window")
+	m.notifySuccess("Opened " + row.site.Name + " in a new tmux window")
 }
 
 // renderErrorModal shows a generic error/info dialog dismissed with esc/q/enter.
@@ -575,7 +719,13 @@ func (m *model) renderErrorModal() string {
 
 // renderHelpModal shows the full keybinding list, grouped — description on
 // the left, key right-aligned. OpenCode-style. Dismiss with ?, esc, q, enter.
-func (m *model) renderHelpModal() string {
+// helpGroupWidth is the width of one column of the help: description, then
+// the key right-aligned.
+const helpGroupWidth = 44
+
+// helpBody returns the help's key list laid out to fit the screen: one
+// column when it fits, two when the screen is too short but wide enough.
+func (m *model) helpBody() []string {
 	type row struct{ desc, key string }
 	groups := []struct {
 		title string
@@ -601,9 +751,12 @@ func (m *model) renderHelpModal() string {
 			{"Refresh selected", "r"},
 			{"Refresh all", "R"},
 			{"Open in another window (tmux)", "o"},
+			{"Edit config.toml", "e"},
 		}},
 		{"Bottom pane", []row{
 			{"Toggle CVE overview", "b"},
+			{"Most vulnerable tab", "4"},
+			{"Recent scans tab", "5"},
 			{"Switch tab", "t"},
 		}},
 		{"App", []row{
@@ -612,50 +765,118 @@ func (m *model) renderHelpModal() string {
 		}},
 	}
 
-	innerW := 44 // width of the content row (desc ... key)
-	descW, keyW := 0, 0
-	for _, g := range groups {
-		for _, r := range g.rows {
-			if len(r.desc) > descW {
-				descW = len(r.desc)
-			}
-			if len(r.key) > keyW {
-				keyW = len(r.key)
-			}
-		}
-	}
-	if descW+keyW+2 > innerW {
-		innerW = descW + keyW + 4
-	}
-
-	titleStyle := lipgloss.NewStyle().Bold(true)
 	headStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Bold(true)
-	keyStyle := ui.Dim
-	descStyle := lipgloss.NewStyle()
-
-	rowLine := func(left, right string) string {
-		pad := innerW - lipgloss.Width(left) - lipgloss.Width(right)
-		if pad < 1 {
-			pad = 1
+	render := func(gs []int) []string {
+		var lines []string
+		for n, i := range gs {
+			if n > 0 {
+				lines = append(lines, "")
+			}
+			lines = append(lines, headStyle.Render(groups[i].title))
+			for _, r := range groups[i].rows {
+				lines = append(lines, helpRow(r.desc, ui.Dim(r.key), helpGroupWidth))
+			}
 		}
-		return left + strings.Repeat(" ", pad) + right
+		return lines
 	}
 
-	var b strings.Builder
-	b.WriteString(rowLine(titleStyle.Render("Keybindings"), keyStyle("esc")))
-	b.WriteString("\n")
-	for _, g := range groups {
-		b.WriteString("\n" + headStyle.Render(g.title) + "\n")
-		for _, r := range g.rows {
-			b.WriteString(rowLine(descStyle.Render(r.desc), keyStyle(r.key)) + "\n")
+	all := make([]int, len(groups))
+	for i := range groups {
+		all[i] = i
+	}
+	one := render(all)
+	const gap = 4
+	if len(one) <= m.helpMaxLines() || m.width < 2*helpGroupWidth+gap+helpChromeW {
+		return one
+	}
+	// Two columns: each group goes to the shorter column, in order.
+	var cols [2][]int
+	var heights [2]int
+	for i, g := range groups {
+		c := 0
+		if heights[1] < heights[0] {
+			c = 1
 		}
+		cols[c] = append(cols[c], i)
+		heights[c] += len(g.rows) + 2
+	}
+	left, right := render(cols[0]), render(cols[1])
+	lines := make([]string, max(len(left), len(right)))
+	for i := range lines {
+		l := ""
+		if i < len(left) {
+			l = left[i]
+		}
+		l += strings.Repeat(" ", helpGroupWidth-lipgloss.Width(l)+gap)
+		if i < len(right) {
+			l += right[i]
+		}
+		lines[i] = l
+	}
+	return lines
+}
+
+// helpChromeW and helpChromeH are the cells the help's border and padding take.
+const (
+	helpChromeW = 6
+	helpChromeH = 4
+)
+
+// helpMaxLines is how many key-list lines fit on screen under the title.
+func (m *model) helpMaxLines() int {
+	// The panes behind it (content plus their borders), minus the box's
+	// border and padding, the title with the blank line under it, and a row
+	// above and below so the panes still frame it.
+	return max(1, m.contentHeight()+2-helpChromeH-2-2)
+}
+
+// helpMaxScroll is the furthest the help can scroll; 0 when it all fits.
+func (m *model) helpMaxScroll() int {
+	n := len(m.helpBody())
+	if n <= m.helpMaxLines() {
+		return 0
+	}
+	// One line is given up for the scroll hint.
+	return n - (m.helpMaxLines() - 1)
+}
+
+func helpRow(left, right string, width int) string {
+	pad := max(1, width-lipgloss.Width(left)-lipgloss.Width(right))
+	return left + strings.Repeat(" ", pad) + right
+}
+
+func (m *model) renderHelpModal() string {
+	body := m.helpBody()
+	width := 0
+	for _, l := range body {
+		width = max(width, lipgloss.Width(l))
+	}
+	if maxScroll := m.helpMaxScroll(); maxScroll > 0 {
+		top := min(m.helpScroll, maxScroll)
+		visible := m.helpMaxLines() - 1
+		hint := ui.Dim(fmt.Sprintf("j/k scroll · %d-%d of %d", top+1, top+visible, len(body)))
+		body = append(slices.Clone(body[top:top+visible]), hint)
 	}
 
+	title := helpRow(lipgloss.NewStyle().Bold(true).Render("Keybindings"), ui.Dim("esc"), width)
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("51")).
 		Padding(1, 2).
-		Render(strings.TrimRight(b.String(), "\n"))
+		Render(title + "\n\n" + strings.Join(body, "\n"))
+}
+
+func (m *model) renderLoadingModal() string {
+	n := len(m.cfg.Sites)
+	noun := "sites"
+	if n == 1 {
+		noun = "site"
+	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("51")).
+		Padding(1, 3).
+		Render(fmt.Sprintf("%s Loading %d %s…", m.spinner.View(), n, noun))
 }
 
 // overlayCenter places `over` centered on top of `bg`, replacing the lines
@@ -1000,6 +1221,9 @@ func scrollbarColumn(offset, total, visible int, active bool) []string {
 // row currently under the cursor (for scroll math).
 func (m *model) sidebarLines() ([]string, int) {
 	if len(m.sites) == 0 {
+		if m.loading {
+			return []string{ui.Dim("loading…")}, 0
+		}
 		return []string{ui.Dim("(no sites — run `webaudt add /path`)")}, 0
 	}
 	var lines []string
@@ -1180,6 +1404,9 @@ func (m *model) rebuildPreview() {
 	}()
 	if len(m.sites) == 0 {
 		m.previewContent = ui.Dim("no sites registered yet.")
+		if m.loading {
+			m.previewContent = ""
+		}
 		return
 	}
 	row := m.sites[m.cursor]
@@ -1250,8 +1477,11 @@ func (m *model) rebuildPreview() {
 			b.WriteString("  " + ui.Failure("ERROR: ") + p.eco.Error + "\n")
 			continue
 		}
-		if len(p.eco.Advisories) == 0 {
-			continue
+		if n := len(p.eco.New); n > 0 {
+			b.WriteString(ui.Warn(fmt.Sprintf("%d new since last scan", n)) + "\n")
+		}
+		if p.eco.Ignored > 0 {
+			b.WriteString(ui.Dim(fmt.Sprintf("%d ignored by this site's ignore list", p.eco.Ignored)) + "\n")
 		}
 		// Group by package, preserving first-seen order.
 		groups := groupAdvisoriesByPackage(p.eco.Advisories)
@@ -1261,6 +1491,24 @@ func (m *model) rebuildPreview() {
 			b.WriteString(m.renderPackageTable(g, perPkgLimit) + "\n")
 			if len(g.items) > perPkgLimit {
 				b.WriteString(ui.Dim(fmt.Sprintf("  … and %d more in this package", len(g.items)-perPkgLimit)) + "\n")
+			}
+		}
+		if len(p.eco.Abandoned) > 0 {
+			b.WriteString("\n " + ui.Warn("abandoned packages") + "\n")
+			for _, a := range p.eco.Abandoned {
+				line := "  " + a.Package
+				if a.Replacement != "" {
+					line += ui.Dim(" → use " + a.Replacement)
+				} else {
+					line += ui.Dim(" (no replacement suggested)")
+				}
+				b.WriteString(line + "\n")
+			}
+		}
+		if len(p.eco.Resolved) > 0 {
+			b.WriteString("\n " + ui.Success("fixed since last scan") + "\n")
+			for _, k := range p.eco.Resolved {
+				b.WriteString("  " + ui.Dim(k) + "\n")
 			}
 		}
 	}
@@ -1307,6 +1555,9 @@ func (m *model) renderPackageTable(g advGroup, limit int) string {
 			id = "(no id)"
 		}
 		header := id + "  [" + ui.SeverityBadge(a.Severity) + "]"
+		if a.New {
+			header += "  " + ui.Warn("NEW")
+		}
 		title := stripCVEPrefix(a.Title, a.ID)
 		if title == "" {
 			title = ui.Dim("(no title)")
@@ -1320,6 +1571,9 @@ func (m *model) renderPackageTable(g advGroup, limit int) string {
 		cell := header + "\n" + title
 		if affects != "" {
 			cell += "\n" + affects
+		}
+		for _, l := range a.Links {
+			cell += "\n" + ui.Dim(l)
 		}
 		rows = append(rows, []string{cell})
 	}
@@ -1413,26 +1667,23 @@ func versionTokens(s string) []string {
 }
 
 func (m *model) renderFooter() string {
-	hints := m.statusMsg
-	if hints == "" {
-		paneTag := func(n int, label string) string {
-			marker := fmt.Sprintf("[%d]", n)
-			if m.focus == n-1 {
-				marker = lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Bold(true).Render(marker)
-				label = lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Render(label)
-			} else {
-				marker = lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(marker)
-				label = lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(label)
-			}
-			return marker + " " + label
+	paneTag := func(n int, label string) string {
+		marker := fmt.Sprintf("[%d]", n)
+		if m.focus == n-1 {
+			marker = lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Bold(true).Render(marker)
+			label = lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Render(label)
+		} else {
+			marker = lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(marker)
+			label = lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(label)
 		}
-		hints = paneTag(1, "sites") + "  " + paneTag(2, "details")
-		if m.bottomOpen {
-			hints += "  " + paneTag(3, "cves")
-		}
-		hints += lipgloss.NewStyle().Foreground(lipgloss.Color("244")).
-			Render("   ·  a add · b cves · ? help · q quit")
+		return marker + " " + label
 	}
+	hints := paneTag(1, "sites") + "  " + paneTag(2, "details")
+	if m.bottomOpen {
+		hints += "  " + paneTag(3, "cves")
+	}
+	hints += lipgloss.NewStyle().Foreground(lipgloss.Color("244")).
+		Render("   ·  a add · b cves · ? help · q quit")
 	return "  " + hints
 }
 
@@ -1460,7 +1711,77 @@ func mergeCounts(a, b cache.Counts) cache.Counts {
 	}
 }
 
+// ---- config editing ----
+
+// editConfig suspends the TUI and opens config.toml in the user's editor.
+func (m *model) editConfig() tea.Cmd {
+	path, err := config.EnsureFile()
+	if err == nil {
+		var ed *exec.Cmd
+		if ed, err = editor.Command(path); err == nil {
+			return tea.ExecProcess(ed, func(err error) tea.Msg { return configEditedMsg{err: err} })
+		}
+	}
+	m.showError("Can't edit config", err.Error())
+	return nil
+}
+
+// reloadConfig picks up an edited config.toml. If the file no longer parses,
+// the TUI keeps the config it had and says what is wrong.
+func (m *model) reloadConfig(editErr error) tea.Cmd {
+	if editErr != nil {
+		m.showError("Editor failed", editErr.Error())
+		return nil
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		m.showError("config.toml is not valid", err.Error()+"\n\nThe previous config is still in use. Press e to fix it.")
+		return nil
+	}
+	m.cfg = cfg
+	resolved := cfg.Settings.Resolve()
+	ui.SetNerdFonts(resolved.NerdFonts)
+	// Audits in flight hold slots in the old semaphore, so only swap it when idle.
+	if len(m.refreshing) == 0 {
+		m.refreshSem = make(chan struct{}, max(1, resolved.ParallelAudits))
+	}
+	m.notifySuccess("Reloaded config.toml")
+	return m.loadSites()
+}
+
+func (m *model) showError(title, msg string) {
+	m.errorTitle = title
+	m.errorMsg = msg
+	m.errorOpen = true
+}
+
 // ---- async refresh ----
+
+// auditFailed reports whether the site's latest audit failed.
+func (m *model) auditFailed(name string) bool {
+	for _, row := range m.sites {
+		if row.site.Name == name {
+			return row.entry != nil && row.entry.Failed()
+		}
+	}
+	return false
+}
+
+// notifyRefreshed confirms a single-site refresh and says what it found.
+func (m *model) notifyRefreshed(name string) {
+	for _, row := range m.sites {
+		if row.site.Name != name || row.entry == nil {
+			continue
+		}
+		if row.entry.Failed() {
+			m.notifyError("Refreshed " + name + ", but an audit failed. See the details pane.")
+			return
+		}
+		m.notifySuccess("Refreshed " + name + " · " + ui.CountsSummaryLong(mergeCounts(row.entry.Composer.Counts, row.entry.NPM.Counts)))
+		return
+	}
+	m.notifySuccess("Refreshed " + name)
+}
 
 func (m *model) refreshCurrent() tea.Cmd {
 	if len(m.sites) == 0 {
@@ -1473,6 +1794,11 @@ func (m *model) refreshCurrent() tea.Cmd {
 // concurrency cap lives in startRefresh's semaphore, not here — every row still
 // shows its spinner immediately and reports its own refreshDoneMsg.
 func (m *model) refreshAll() tea.Cmd {
+	if len(m.sites) == 0 {
+		return nil
+	}
+	m.refreshBatch, m.refreshBatchFailed = len(m.sites), 0
+	m.notify(toastInfo, fmt.Sprintf("Refreshing %d %s…", len(m.sites), "site"+plural(len(m.sites))))
 	cmds := make([]tea.Cmd, 0, len(m.sites))
 	for _, row := range m.sites {
 		cmds = append(cmds, m.startRefresh(row.site))
@@ -1482,7 +1808,6 @@ func (m *model) refreshAll() tea.Cmd {
 
 func (m *model) startRefresh(site config.Site) tea.Cmd {
 	m.refreshing[site.Name] = true
-	m.setStatus("refreshing " + site.Name)
 	cfg := m.cfg
 	sem := m.refreshSem
 	return func() tea.Msg {
@@ -1577,16 +1902,11 @@ func (m *model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		name := m.addResolution.Name
 		m.closeAdd()
-		m.loadSites()
-		// Move cursor to the newly added site.
-		for i, row := range m.sites {
-			if row.site.Name == name {
-				m.cursor = i
-				break
-			}
-		}
+		// Apply appended the new site to the config; add only its row.
+		m.sites = append(m.sites, loadRow(m.cfg.Sites[len(m.cfg.Sites)-1]))
+		m.cursor = len(m.sites) - 1
 		m.rebuildPreview()
-		m.setStatus("added " + name)
+		m.notifySuccess("Added " + name)
 		return m, nil
 	case "n", "N", "backspace":
 		m.addStage = 0
@@ -1848,6 +2168,9 @@ func longestCommonPrefix(ss []string) string {
 // ---- remove modal ----
 
 func (m *model) updateRemove(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.removing {
+		return m, nil
+	}
 	switch msg.String() {
 	case "esc", "ctrl+c", "q", "n", "N":
 		m.removeOpen = false
@@ -1858,15 +2181,14 @@ func (m *model) updateRemove(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		name := m.sites[m.cursor].site.Name
-		if err := registry.Remove(m.cfg, name); err != nil {
-			m.setStatus("remove " + name + ": " + err.Error())
-			m.removeOpen = false
-			return m, nil
-		}
-		m.removeOpen = false
-		m.loadSites()
-		m.setStatus("removed " + name)
-		return m, nil
+		// Remove works on a copy, so the TUI keeps a consistent config if
+		// saving fails.
+		cfg := *m.cfg
+		m.removing = true
+		return m, tea.Batch(m.spinner.Tick, func() tea.Msg {
+			err := registry.Remove(&cfg, name)
+			return removeDoneMsg{name: name, cfg: &cfg, err: err}
+		})
 	}
 	return m, nil
 }
@@ -1885,7 +2207,11 @@ func (m *model) renderRemoveModal() string {
 	b.WriteString("\n")
 	b.WriteString(ui.Warn("This removes the config entry and its cached audit."))
 	b.WriteString("\n\n")
-	b.WriteString(ui.Dim("y/enter confirm · n/esc/q cancel"))
+	if m.removing {
+		b.WriteString(m.spinner.View() + " Removing " + row.site.Name + "…")
+	} else {
+		b.WriteString(ui.Dim("y/enter confirm · n/esc/q cancel"))
+	}
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -1914,7 +2240,7 @@ func (m *model) renderBottomPane() string {
 		if i > 0 {
 			header.WriteString(idleStyle.Render(" · "))
 		}
-		label := fmt.Sprintf("[%d] %s", i+1, t)
+		label := fmt.Sprintf("[%d] %s", firstTabKey+i, t)
 		if i == m.bottomTab {
 			header.WriteString(activeStyle.Render(label))
 		} else {

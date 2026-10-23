@@ -26,6 +26,7 @@ Run with no arguments to open the TUI.`,
 		newRefreshCmd(),
 		newStatusCmd(),
 		newDoctorCmd(),
+		newConfigCmd(),
 	)
 	return cmd
 }

@@ -49,7 +49,7 @@ func TestRefreshAll_RespectsParallelAudits(t *testing.T) {
 	}
 
 	m := newModel(cfg)
-	m.loadSites()
+	m.setRows(loadRows(cfg.Sites))
 	if len(m.sites) != nSites {
 		t.Fatalf("loaded %d sites, want %d", len(m.sites), nSites)
 	}

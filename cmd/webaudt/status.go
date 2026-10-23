@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -31,6 +32,7 @@ func newStatusCmd() *cobra.Command {
 			}
 
 			worst := types.SevClean
+			failed := false
 			matched := 0
 			jsonOut := []statusJSON{}
 			composerBin := cfg.Settings.Resolve().ComposerBin
@@ -47,6 +49,7 @@ func newStatusCmd() *cobra.Command {
 					if types.SeverityRank(w) > types.SeverityRank(worst) {
 						worst = w
 					}
+					failed = failed || entry.Failed()
 				}
 				if asJSON {
 					if entry != nil {
@@ -57,15 +60,15 @@ func newStatusCmd() *cobra.Command {
 				cards = append(cards, renderStatusCard(s, entry))
 			}
 
+			if target != "" && matched == 0 {
+				return fmt.Errorf("no such site: %s", target)
+			}
+
 			if asJSON {
 				b, _ := json.MarshalIndent(jsonOut, "", "  ")
 				fmt.Println(string(b))
-				os.Exit(severityToExitCode(worst))
+				os.Exit(exitCode(worst, failed))
 				return nil
-			}
-
-			if target != "" && matched == 0 {
-				return fmt.Errorf("no such site: %s", target)
 			}
 
 			noun := "sites"
@@ -82,8 +85,12 @@ func newStatusCmd() *cobra.Command {
 					fmt.Print(c)
 				}
 			}
-			fmt.Printf("  %s %s\n\n", ui.Dim("overall:"), ui.SeverityBadge(worst))
-			os.Exit(severityToExitCode(worst))
+			overall := ui.SeverityBadge(worst)
+			if failed && worst != types.SevError {
+				overall += ui.Dim(" · ") + ui.SeverityBadge(types.SevError)
+			}
+			fmt.Printf("  %s %s\n\n", ui.Dim("overall:"), overall)
+			os.Exit(exitCode(worst, failed))
 			return nil
 		},
 	}
@@ -151,9 +158,51 @@ func renderStatusCard(s config.Site, entry *cache.Entry) string {
 		if breakdown != "" {
 			out += "      " + breakdown + "\n"
 		}
+		if changes := changesSummary(entry); changes != "" {
+			out += "      " + changes + "\n"
+		}
 	}
 	out += "      " + ui.Dim(s.Path) + "\n\n"
 	return out
+}
+
+// changesSummary describes what changed since the previous audit and what
+// else needs attention, e.g. "2 new · 1 fixed since last scan · 1 abandoned".
+// Empty when there is nothing to report.
+func changesSummary(entry *cache.Entry) string {
+	var newN, fixed, abandoned, ignored int
+	for _, eco := range []cache.Ecosystem{entry.Composer, entry.NPM} {
+		newN += len(eco.New)
+		fixed += len(eco.Resolved)
+		abandoned += len(eco.Abandoned)
+		ignored += eco.Ignored
+	}
+	var parts []string
+	if newN > 0 {
+		parts = append(parts, fmt.Sprintf("%d new", newN))
+	}
+	if fixed > 0 {
+		parts = append(parts, fmt.Sprintf("%d fixed", fixed))
+	}
+	if len(parts) > 0 {
+		parts[len(parts)-1] += " since last scan"
+	}
+	if abandoned > 0 {
+		parts = append(parts, fmt.Sprintf("%d abandoned", abandoned))
+	}
+	if ignored > 0 {
+		parts = append(parts, fmt.Sprintf("%d ignored", ignored))
+	}
+	return strings.Join(parts, ui.Dim(" · "))
+}
+
+// exitCode is the documented exit code for a run. A failed audit wins over
+// any severity: the counts are incomplete, so scripts must not trust them.
+func exitCode(worst string, failed bool) int {
+	if failed {
+		return 10
+	}
+	return severityToExitCode(worst)
 }
 
 // severityToExitCode maps a worst-severity bucket to the documented exit code:
